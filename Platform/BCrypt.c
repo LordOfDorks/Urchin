@@ -17,16 +17,12 @@ THE SOFTWARE IS PROVIDED *AS IS*, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 // Note: This code was derived from the TCG TPM 2.0 Library Specification at
 // http://www.trustedcomputinggroup.org/resources/tpm_library_specification
 
+#ifdef USE_BCRYPT
 #include "stdafx.h"
 
 typedef struct {
     BCRYPT_HASH_HANDLE hHash;
-} OSSL_HASH_STATE;
-
-TBS_HCONTEXT g_hTbs = NULL;
-TPM2B_AUTH g_LockoutAuth = {0};
-TPM2B_AUTH g_EndorsementAuth = {0};
-TPM2B_AUTH g_StorageAuth = {0};
+} BCRYPT_HASH_STATE;
 
 BCRYPT_ALG_HANDLE g_hRngAlg = NULL;
 BCRYPT_ALG_HANDLE g_hAlg[HASH_COUNT + 1] = {0};
@@ -131,8 +127,8 @@ _cpri__CopyHashState (
     CPRI_HASH_STATE *in         // IN: source of the state
     )
 {
-    OSSL_HASH_STATE *i = (OSSL_HASH_STATE *)&in->state;
-    OSSL_HASH_STATE *o = (OSSL_HASH_STATE *)&out->state;
+    BCRYPT_HASH_STATE *i = (BCRYPT_HASH_STATE *)&in->state;
+    BCRYPT_HASH_STATE *o = (BCRYPT_HASH_STATE *)&out->state;
     UINT16 retVal = 0;
 
     if (BCryptDuplicateHash(i->hHash, &o->hHash, NULL, 0, 0) != 0)
@@ -163,7 +159,7 @@ _cpri__StartHash(
     CPRI_HASH_STATE *hashState  // OUT: the state of hash stack.
     )
 {
-    OSSL_HASH_STATE *state = (OSSL_HASH_STATE *)&hashState->state;
+    BCRYPT_HASH_STATE *state = (BCRYPT_HASH_STATE *)&hashState->state;
     const HASH_INFO *hashInfo = GetHashInfoPointer(hashAlg);
     UINT16 retVal = 0;
 
@@ -199,7 +195,7 @@ _cpri__UpdateHash(
     BYTE *data                  // IN: data to be hashed
     )
 {
-    OSSL_HASH_STATE *state = (OSSL_HASH_STATE *)&hashState->state;
+    BCRYPT_HASH_STATE *state = (BCRYPT_HASH_STATE *)&hashState->state;
     BCryptHashData(state->hHash, data, dataSize, 0);
 }
 
@@ -219,7 +215,7 @@ _cpri__CompleteHash(
     __in_ecount(dOutSize) BYTE *dOut // OUT: hash digest
     )
 {
-    OSSL_HASH_STATE *state = (OSSL_HASH_STATE *)&hashState->state;
+    BCRYPT_HASH_STATE *state = (BCRYPT_HASH_STATE *)&hashState->state;
     UINT16           retVal = 0;
     UINT32           hLen;
     UINT32           cbResult;
@@ -610,114 +606,10 @@ Cleanup:
     return retVal;
 }
 
-UINT32
-PlatformSubmitTPM20Command(
-    BOOL CloseContext,
-    BYTE* pbCommand,
-    UINT32 cbCommand,
-    BYTE* pbResponse,
-    UINT32 cbResponse,
-    UINT32* pcbResponse
-    )
-{
-    TBS_RESULT result = 0;
-    if (g_hTbs == NULL)
-    {
-        TBS_CONTEXT_PARAMS2 params = {TPM_VERSION_20, 0, 0, 1};
-        if ((result = Tbsi_Context_Create((PCTBS_CONTEXT_PARAMS)&params, &g_hTbs)) != TBS_SUCCESS)
-        {
-            return (UINT32)result;
-        }
-    }
-
-    *pcbResponse = cbResponse;
-    if ((result = Tbsip_Submit_Command(g_hTbs,
-                                       TBS_COMMAND_LOCALITY_ZERO,
-                                       TBS_COMMAND_PRIORITY_NORMAL,
-                                       pbCommand,
-                                       cbCommand,
-                                       pbResponse,
-                                       pcbResponse)) != TBS_SUCCESS)
-    {
-        return (UINT32)result;
-    }
-
-    if (CloseContext != FALSE)
-    {
-        Tbsip_Context_Close(g_hTbs);
-        g_hTbs = NULL;
-    }
-    return (UINT32)result;
-}
-
 void
-PlattformRetrieveAuthValues(
+_cpri__ReleaseCrypt(
     void
-    )
-{
-    WCHAR authValue[255] = L"";
-    DWORD authValueSize = sizeof(authValue);
-    DWORD allowedSize = sizeof(g_LockoutAuth.t.buffer);
-
-    if((RegGetValueW(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Services\\TPM\\WMI\\Admin", L"OwnerAuthFull", RRF_RT_REG_SZ, NULL, authValue, &authValueSize) != ERROR_SUCCESS) ||
-       (!CryptStringToBinaryW(authValue, 0, CRYPT_STRING_BASE64, g_LockoutAuth.t.buffer, &allowedSize, NULL, NULL)))
-    {
-        MemorySet(&g_LockoutAuth, 0x00, sizeof(g_LockoutAuth));
-    }
-    g_LockoutAuth.t.size = (UINT16)allowedSize;
-
-    authValueSize = sizeof(authValue);
-    allowedSize = sizeof(g_StorageAuth.t.buffer);
-    if((RegGetValueW(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Services\\TPM\\WMI\\Admin", L"StorageOwnerAuth", RRF_RT_REG_SZ, NULL, authValue, &authValueSize) != ERROR_SUCCESS) ||
-       (!CryptStringToBinaryW(authValue, 0, CRYPT_STRING_BASE64, g_StorageAuth.t.buffer, &allowedSize, NULL, NULL)))
-    {
-        MemorySet(&g_StorageAuth, 0x00, sizeof(g_StorageAuth));
-    }
-    g_StorageAuth.t.size = (UINT16)allowedSize;
-
-    authValueSize = sizeof(authValue);
-    allowedSize = sizeof(g_EndorsementAuth.t.buffer);
-    if((RegGetValueW(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Services\\TPM\\WMI\\Endorsement", L"EndorsementAuth", RRF_RT_REG_SZ, NULL, authValue, &authValueSize) != ERROR_SUCCESS) ||
-        (!CryptStringToBinaryW(authValue, 0, CRYPT_STRING_BASE64, g_EndorsementAuth.t.buffer, &allowedSize, NULL, NULL)))
-    {
-        MemorySet(&g_EndorsementAuth, 0x00, sizeof(g_EndorsementAuth));
-    }
-    g_EndorsementAuth.t.size = (UINT16)allowedSize;
-}
-
-int
-TpmFail(
-    const char* function,
-    int line,
-    int code
-    )
-{
-    UNREFERENCED_PARAMETER(function);
-    UNREFERENCED_PARAMETER(line);
-    UNREFERENCED_PARAMETER(code);
-
-    assert(0);
-    return 0;
-}
-
-void
-_cpri__PlatformRelease(
-    void
-    )
-{
-    if (g_hTbs != NULL)
-    {
-        Tbsip_Context_Close(g_hTbs);
-        g_hTbs = NULL;
-    }
-
-    _cpri__PlatformReleaseCrypt();
-}
-
-void
-_cpri__PlatformReleaseCrypt(
-    void
-    )
+)
 {
     if (g_hRngAlg != NULL)
     {
@@ -743,3 +635,5 @@ _cpri__PlatformReleaseCrypt(
         g_hAesAlg = NULL;
     }
 }
+
+#endif //USE_BCRYPT

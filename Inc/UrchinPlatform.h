@@ -96,4 +96,4 @@ void
 _cpri__PlatformRelease(void);
 
 void
-_cpri__PlatformReleaseCrypt(void);
+_cpri__ReleaseCrypt(void);

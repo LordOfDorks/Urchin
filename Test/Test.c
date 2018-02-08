@@ -19,6 +19,11 @@ THE SOFTWARE IS PROVIDED *AS IS*, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 #include "stdafx.h"
 
+BCRYPT_ALG_HANDLE hRngAlg;
+BCRYPT_ALG_HANDLE hAlg[HASH_COUNT + 1];
+BCRYPT_ALG_HANDLE hRsaAlg;
+BCRYPT_ALG_HANDLE hAesAlg;
+
 #ifdef USE_TPM_SIMULATOR
 // Linked Simulator Hookup
 extern "C"
@@ -35,12 +40,6 @@ void TPMSimTeardown(void);
 }
 #define PlatformSubmitTPM20Command TPMSimSubmitCommand
 #endif
-
-// Extern algorithm handles from the platform library
-extern BCRYPT_ALG_HANDLE g_hRngAlg;
-extern BCRYPT_ALG_HANDLE g_hAlg[HASH_COUNT + 1];
-extern BCRYPT_ALG_HANDLE g_hRsaAlg;
-extern BCRYPT_ALG_HANDLE g_hAesAlg;
 
 // Global Handles and Objects
 BCRYPT_KEY_HANDLE g_hAik = NULL;
@@ -70,7 +69,7 @@ ImportPubKey(
     BYTE defaultExponent[3] = {0x01, 0x00, 0x01};
     BCRYPT_RSAKEY_BLOB* pKey = (BCRYPT_RSAKEY_BLOB*)buffer;
 
-    if((status = BCryptOpenAlgorithmProvider(&g_hRsaAlg, BCRYPT_RSA_ALGORITHM, NULL, 0)) != 0)
+    if((status = BCryptOpenAlgorithmProvider(&hRsaAlg, BCRYPT_RSA_ALGORITHM, NULL, 0)) != 0)
     {
         return status;
     }
@@ -88,7 +87,7 @@ ImportPubKey(
         UINT32_Marshal(&tKey->obj.publicArea.t.publicArea.parameters.rsaDetail.exponent, &expBuf, NULL);
     }
     memcpy(&buffer[sizeof(BCRYPT_RSAKEY_BLOB) + pKey->cbPublicExp], tKey->obj.publicArea.t.publicArea.unique.rsa.t.buffer, pKey->cbModulus);
-    if((status = BCryptImportKeyPair(g_hRsaAlg, NULL, BCRYPT_RSAPUBLIC_BLOB, hKey, buffer, sizeof(BCRYPT_RSAKEY_BLOB) + pKey->cbPublicExp + pKey->cbModulus, 0)) !=0)
+    if((status = BCryptImportKeyPair(hRsaAlg, NULL, BCRYPT_RSAPUBLIC_BLOB, hKey, buffer, sizeof(BCRYPT_RSAKEY_BLOB) + pKey->cbPublicExp + pKey->cbModulus, 0)) !=0)
     {
         return status;
     }
@@ -1990,7 +1989,7 @@ TestRsaKeyImport()
     TPM2B_ENCRYPTED_SECRET inSymSeed = {0};
 
     // Create SW key
-    if(((result = BCryptGenerateKeyPair(g_hRsaAlg, &hSwKey, 2048, 0)) != ERROR_SUCCESS) ||
+    if(((result = BCryptGenerateKeyPair(hRsaAlg, &hSwKey, 2048, 0)) != ERROR_SUCCESS) ||
        ((result = BCryptFinalizeKeyPair(hSwKey, 0)) != ERROR_SUCCESS) ||
        ((result = BCryptExportKey(hSwKey, NULL, BCRYPT_RSAPRIVATE_BLOB, swKey, sizeof(swKey), &cbSwKey, 0)) != ERROR_SUCCESS))
     {
@@ -2413,7 +2412,7 @@ TestKeyExport()
     TPM2B_DATA innerSymKey = {0};
 
     // Create SW key
-    if(((result = BCryptGenerateKeyPair(g_hRsaAlg, &hSwKey, 2048, 0)) != ERROR_SUCCESS) ||
+    if(((result = BCryptGenerateKeyPair(hRsaAlg, &hSwKey, 2048, 0)) != ERROR_SUCCESS) ||
         ((result = BCryptFinalizeKeyPair(hSwKey, 0)) != ERROR_SUCCESS) ||
         ((result = BCryptExportKey(hSwKey, NULL, BCRYPT_RSAPRIVATE_BLOB, swKey, sizeof(swKey), &cbSwKey, 0)) != ERROR_SUCCESS))
     {
@@ -2678,7 +2677,7 @@ TestSymEncryption()
     aesKey = parms.objectTableIn[TPM2_FlushContext_HdlIn_FlushHandle];
 
     // Create a software key
-    if(((result = BCryptGenerateSymmetricKey(g_hAesAlg, &hAesKey, NULL, 0, userKey, sizeof(userKey), 0)) != ERROR_SUCCESS) ||
+    if(((result = BCryptGenerateSymmetricKey(hAesAlg, &hAesKey, NULL, 0, userKey, sizeof(userKey), 0)) != ERROR_SUCCESS) ||
        ((result = BCryptSetProperty(hAesKey, BCRYPT_CHAINING_MODE, (PUCHAR)BCRYPT_CHAIN_MODE_CBC, sizeof(BCRYPT_CHAIN_MODE_CBC), 0)) != ERROR_SUCCESS))
     {
         goto Cleanup;
@@ -3803,7 +3802,7 @@ TestKeyAttestation()
     size = sizeof(attestation.t.attestationData);
     attestation.b.size = TPMS_ATTEST_Marshal(&certifyCreationOut.certifyInfo.t.attestationData, &buffer, &size);
     signatureDigest.t.size = SHA256_DIGEST_SIZE;
-    if(((result = BCryptCreateHash(g_hAlg[1], &hHash, NULL, 0, NULL, 0, 0)) != 0) ||
+    if(((result = BCryptCreateHash(hAlg[1], &hHash, NULL, 0, NULL, 0, 0)) != 0) ||
        ((result = BCryptHashData(hHash, attestation.b.buffer, attestation.b.size, 0)) != 0) ||
        ((result = BCryptFinishHash(hHash, signatureDigest.t.buffer, signatureDigest.t.size, 0)) != 0))
     {
@@ -3870,7 +3869,7 @@ TestKeyAttestation()
     size = sizeof(attestation.t.attestationData);
     attestation.b.size = TPMS_ATTEST_Marshal(&certifyOut.certifyInfo.t.attestationData, &buffer, &size);
     signatureDigest.t.size = SHA256_DIGEST_SIZE;
-    if(((result = BCryptCreateHash(g_hAlg[1], &hHash, NULL, 0, NULL, 0, 0)) != 0) ||
+    if(((result = BCryptCreateHash(hAlg[1], &hHash, NULL, 0, NULL, 0, 0)) != 0) ||
         ((result = BCryptHashData(hHash, attestation.b.buffer, attestation.b.size, 0)) != 0) ||
         ((result = BCryptFinishHash(hHash, signatureDigest.t.buffer, signatureDigest.t.size, 0)) != 0))
     {
@@ -3931,7 +3930,7 @@ TestPlatformAttestation()
     size = sizeof(attestation.t.attestationData);
     attestation.b.size = TPMS_ATTEST_Marshal(&quoteOut.quoted.t.attestationData, &buffer, &size);
     signatureDigest.t.size = SHA256_DIGEST_SIZE;
-    if (((result = BCryptCreateHash(g_hAlg[1], &hHash, NULL, 0, NULL, 0, 0)) != 0) ||
+    if (((result = BCryptCreateHash(hAlg[1], &hHash, NULL, 0, NULL, 0, 0)) != 0) ||
         ((result = BCryptHashData(hHash, attestation.b.buffer, attestation.b.size, 0)) != 0) ||
         ((result = BCryptFinishHash(hHash, signatureDigest.t.buffer, signatureDigest.t.size, 0)) != 0))
     {
@@ -3969,7 +3968,7 @@ TestPlatformAttestation()
     size = sizeof(attestation.t.attestationData);
     attestation.b.size = TPMS_ATTEST_Marshal(&getTimeOut.timeInfo.t.attestationData, &buffer, &size);
     signatureDigest.t.size = SHA256_DIGEST_SIZE;
-    if (((result = BCryptCreateHash(g_hAlg[1], &hHash, NULL, 0, NULL, 0, 0)) != 0) ||
+    if (((result = BCryptCreateHash(hAlg[1], &hHash, NULL, 0, NULL, 0, 0)) != 0) ||
         ((result = BCryptHashData(hHash, attestation.b.buffer, attestation.b.size, 0)) != 0) ||
         ((result = BCryptFinishHash(hHash, signatureDigest.t.buffer, signatureDigest.t.size, 0)) != 0))
     {
@@ -3998,6 +3997,24 @@ int __cdecl wmain(int argc, WCHAR* argv[])
 
     UNREFERENCED_PARAMETER(argc);
     UNREFERENCED_PARAMETER(argv);
+
+    // Extern algorithm handles from the platform library
+
+    if ((result = BCryptOpenAlgorithmProvider(&hRngAlg, BCRYPT_RNG_ALGORITHM, NULL, 0)) != 0) goto Cleanup;
+#ifdef TPM_ALG_SHA1
+    if ((result = BCryptOpenAlgorithmProvider(&hAlg[0], BCRYPT_SHA1_ALGORITHM, NULL, 0)) != 0) goto Cleanup;
+#endif
+#ifdef TPM_ALG_SHA256
+    if ((result = BCryptOpenAlgorithmProvider(&hAlg[1], BCRYPT_SHA256_ALGORITHM, NULL, 0)) != 0) goto Cleanup;
+#endif
+#ifdef TPM_ALG_SHA384
+    if ((result = BCryptOpenAlgorithmProvider(&hAlg[2], BCRYPT_SHA384_ALGORITHM, NULL, 0)) != 0) goto Cleanup;
+#endif
+#ifdef TPM_ALG_SHA512
+    if ((result = BCryptOpenAlgorithmProvider(&hAlg[3], BCRYPT_SHA512_ALGORITHM, NULL, 0);
+#endif
+    if ((result = BCryptOpenAlgorithmProvider(&hRsaAlg, BCRYPT_RSA_ALGORITHM, NULL, 0)) != 0) goto Cleanup;
+    if ((result = BCryptOpenAlgorithmProvider(&hAesAlg, BCRYPT_AES_ALGORITHM, NULL, 0)) != 0) goto Cleanup;
 
     _cpri__RngStartup();
     _cpri__HashStartup();
@@ -4115,7 +4132,7 @@ int __cdecl wmain(int argc, WCHAR* argv[])
     wprintf(L"RUNNING........UnloadKeyObjects()\r");
     result = UnloadKeyObjects();
     if(result) wprintf(L"(0x%08x)\n", result); else wprintf(L"PASS........\n");
-
+Cleanup:
     return result;
 }
 
