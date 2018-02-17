@@ -912,6 +912,29 @@ void SetEkTemplate(
     publicArea->t.publicArea.parameters.rsaDetail.symmetric.mode.aes = TPM_ALG_CFB;
 };
 
+void SetSrkTemplate(
+    TPM2B_PUBLIC *publicArea
+)
+{
+    if (publicArea == NULL) return;
+    publicArea->t.publicArea.unique.rsa.t.size = MAX_RSA_KEY_BITS / 8;
+    publicArea->t.publicArea.type = TPM_ALG_RSA;
+    publicArea->t.publicArea.nameAlg = TPM_ALG_SHA256;
+    publicArea->t.publicArea.objectAttributes.fixedTPM = SET;
+    publicArea->t.publicArea.objectAttributes.fixedParent = SET;
+    publicArea->t.publicArea.objectAttributes.sensitiveDataOrigin = SET;
+    publicArea->t.publicArea.objectAttributes.userWithAuth = SET;
+    publicArea->t.publicArea.objectAttributes.noDA = SET;
+    publicArea->t.publicArea.objectAttributes.restricted = SET;
+    publicArea->t.publicArea.objectAttributes.decrypt = SET;
+    publicArea->t.publicArea.parameters.rsaDetail.keyBits = MAX_RSA_KEY_BITS;
+    publicArea->t.publicArea.parameters.rsaDetail.exponent = 0;
+    publicArea->t.publicArea.parameters.rsaDetail.scheme.scheme = TPM_ALG_NULL;
+    publicArea->t.publicArea.parameters.rsaDetail.symmetric.algorithm = TPM_ALG_AES;
+    publicArea->t.publicArea.parameters.rsaDetail.symmetric.keyBits.aes = 128;
+    publicArea->t.publicArea.parameters.rsaDetail.symmetric.mode.aes = TPM_ALG_CFB;
+};
+
 //*** ObjectComputeName()
 // This function computes the Name of an object from its public area.
 void

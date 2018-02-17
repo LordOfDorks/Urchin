@@ -157,8 +157,8 @@ typedef struct {
 #define    ALG_XOR               YES    // 1
 #define    ALG_KEYEDHASH         YES    // 1
 #define    ALG_SHA256            YES    // 1
-#define    ALG_SHA384            NO    // 0
-#define    ALG_SHA512            NO    // 0
+#define    ALG_SHA384            YES    // 1
+#define    ALG_SHA512            YES    // 1
 #define    ALG_SM3_256           NO    // 0
 #define    ALG_SM4               NO    // 0
 #define    ALG_RSASSA            YES    // 1
@@ -13022,6 +13022,10 @@ INT32 *size
 
 void SetEkTemplate(
 TPM2B_PUBLIC *publicArea         // OUT: public area of EK object
+);
+
+void SetSrkTemplate(
+    TPM2B_PUBLIC *publicArea
 );
 
 void

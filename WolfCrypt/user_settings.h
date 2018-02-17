@@ -36,6 +36,7 @@
 #define WOLFSSL_SHA512
 #define WOLFSSL_KEY_GEN
 #define WOLFSSL_AES_DIRECT
+#define WC_NO_HARDEN
 
 #ifdef __cplusplus
     }   /* extern "C" */

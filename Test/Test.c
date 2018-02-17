@@ -41,6 +41,551 @@ void TPMSimTeardown(void);
 #define PlatformSubmitTPM20Command TPMSimSubmitCommand
 #endif
 
+#ifdef USE_VCOM_TPM
+#ifdef __cplusplus
+extern "C"
+{
+#endif
+
+UINT32 TPMVComSubmitCommand(
+    BOOL CloseContext,
+    BYTE* pbCommand,
+    UINT32 cbCommand,
+    BYTE* pbResponse,
+    UINT32 cbResponse,
+    UINT32* pcbResponse
+);
+void TPMVComTeardown(void);
+#define PlatformSubmitTPM20Command TPMVComSubmitCommand
+
+HANDLE hVCom = INVALID_HANDLE_VALUE;
+LPCTSTR vcomPort = TEXT("COM6");
+unsigned int vcomTimeout = 5 * 60 * 1000;
+
+// Nucleo-L476RC based TPM on USB-VCOM
+#pragma pack(push, 1)
+#define TPM_VCOM_PORT TEXT("COM6")
+#define SIGNALMAGIC (0x326d7054)
+#define MAX_TPM_COMMAND_SIZE (1024)
+#define TPM_HEADER_SIZE (10)
+#define CMD_RSP_BUFFER_SIZE (MAX_TPM_COMMAND_SIZE)
+typedef enum
+{
+    SignalNothing = 0,
+    SignalShutdown,
+    SignalReset,
+    SignalSetClock,
+    // IN {UINT32 time}
+    SignalCancelOn,
+    SignalCancelOff,
+    SignalCommand,
+    // IN {BYTE Locality, UINT32 InBufferSize, BYTE[InBufferSize] InBuffer}
+    // OUT {UINT32 OutBufferSize, BYTE[OutBufferSize] OutBuffer}
+    SignalResponse,
+    // OUT {UINT32 OutBufferSize, BYTE[OutBufferSize] OutBuffer}
+} signalCode_t;
+
+typedef struct
+{
+    unsigned int magic;
+    signalCode_t signal;
+    unsigned int dataSize;
+} signalHdr_t;
+
+typedef union
+{
+    struct
+    {
+        unsigned int time;
+    } SignalSetClockPayload;
+    struct
+    {
+        unsigned int locality;
+        unsigned int cmdSize;
+        unsigned char cmd[1];
+    } SignalCommandPayload;
+} signalPayload_t, *pSignalPayload_t;
+
+typedef union
+{
+    signalHdr_t s;
+    unsigned char b[sizeof(signalHdr_t)];
+} signalWrapper_t, *pSignalWrapper_t;
+#pragma pack(pop)
+
+unsigned int GetTimeStamp(void)
+{
+    FILETIME now = { 0 };
+    LARGE_INTEGER convert = { 0 };
+
+    // Get the current timestamp
+    GetSystemTimeAsFileTime(&now);
+    convert.LowPart = now.dwLowDateTime;
+    convert.HighPart = now.dwHighDateTime;
+    convert.QuadPart = (convert.QuadPart - (UINT64)(11644473600000 * 10000)) / 10000000;
+    return convert.LowPart;
+}
+
+unsigned int SetTpmResponseTimeout(unsigned int timeout)
+{
+    COMMTIMEOUTS to = { 0 };
+    to.ReadIntervalTimeout = 0;
+    to.ReadTotalTimeoutMultiplier = 0;
+    to.ReadTotalTimeoutConstant = timeout;
+    to.WriteTotalTimeoutMultiplier = 0;
+    to.WriteTotalTimeoutConstant = 0;
+    if (!SetCommTimeouts(hVCom, &to))
+    {
+        return GetLastError();
+    }
+    else
+    {
+        return 0;
+    }
+}
+
+unsigned int SendTpmSignal(signalCode_t signal,
+    unsigned int timeout,
+    BYTE* dataIn,
+    unsigned int dataInSize,
+    BYTE* dataOut,
+    unsigned int dataOutSize,
+    unsigned int* dataOutUsed
+)
+{
+    unsigned int result = 0;
+    DWORD written = 0;
+    unsigned int signalBufSize = sizeof(signalWrapper_t) + dataInSize;
+    BYTE* signalBuf = (BYTE*)malloc(signalBufSize);
+    pSignalWrapper_t sig = (pSignalWrapper_t)signalBuf;
+    sig->s.magic = SIGNALMAGIC;
+    sig->s.signal = signal;
+    sig->s.dataSize = dataInSize;
+    if (dataInSize > 0)
+    {
+        memcpy(&signalBuf[sizeof(signalWrapper_t)], dataIn, dataInSize);
+    }
+
+    PurgeComm(hVCom, PURGE_RXCLEAR | PURGE_TXCLEAR);
+    if (!WriteFile(hVCom, signalBuf, signalBufSize, &written, NULL))
+    {
+        result = GetLastError();
+        goto Cleanup;
+    }
+
+    if (signal == SignalCommand)
+    {
+        DWORD read = 0;
+        unsigned int rspSize = 0;
+
+        SetTpmResponseTimeout(timeout - 1000);
+        if (!ReadFile(hVCom, &rspSize, sizeof(rspSize), (LPDWORD)&read, NULL))
+        {
+            result = GetLastError();
+            goto Cleanup;
+        }
+        if (read == 0)
+        {
+            result = GetLastError();
+            goto Cleanup;
+        }
+
+        read = 0;
+        SetTpmResponseTimeout(1000);
+        if ((!ReadFile(hVCom, dataOut, min(rspSize, dataOutSize), (LPDWORD)&read, NULL)) ||
+            (read != rspSize))
+        {
+            result = GetLastError();
+            goto Cleanup;
+        }
+        *dataOutUsed = read;
+        PurgeComm(hVCom, PURGE_RXCLEAR);
+    }
+
+Cleanup:
+    if (signalBuf) free(signalBuf);
+    return result;
+}
+
+BYTE* GenerateTpmCommandPayload(unsigned int locality,
+    BYTE* cmd,
+    UINT32 cmdSize,
+    unsigned int* dataInSize
+)
+{
+    pSignalPayload_t payload = NULL;
+    *dataInSize = sizeof(payload->SignalCommandPayload) - sizeof(unsigned char) + cmdSize;
+    BYTE* dataIn = (BYTE*)malloc(*dataInSize);
+    payload = (pSignalPayload_t)dataIn;
+    payload->SignalCommandPayload.locality = locality;
+    payload->SignalCommandPayload.cmdSize = cmdSize;
+    memcpy(payload->SignalCommandPayload.cmd, cmd, cmdSize);
+    return dataIn;
+}
+
+unsigned int OpenTpmConnection(LPCTSTR comPort)
+{
+    DCB dcb = { 0 };
+    if (hVCom != INVALID_HANDLE_VALUE)
+    {
+        CloseHandle(hVCom);
+        hVCom = INVALID_HANDLE_VALUE;
+    }
+    dcb.DCBlength = sizeof(DCB);
+    dcb.BaudRate = CBR_115200;
+    dcb.fBinary = TRUE;
+    dcb.fParity = FALSE;
+    dcb.ByteSize = 8;
+    dcb.Parity = NOPARITY;
+    dcb.StopBits = ONESTOPBIT;
+    if (((hVCom = CreateFile(comPort, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL)) == INVALID_HANDLE_VALUE) ||
+        (!SetCommState(hVCom, &dcb)))
+    {
+        return GetLastError();
+    }
+    PurgeComm(hVCom, PURGE_RXCLEAR);
+    unsigned int time = GetTimeStamp();
+    SendTpmSignal(SignalSetClock, 500, (BYTE*)&time, sizeof(time), NULL, 0, NULL);
+
+    return 0;
+}
+
+UINT32 TPMVComSubmitCommand(
+    BOOL CloseContext,
+    BYTE* pbCommand,
+    UINT32 cbCommand,
+    BYTE* pbResponse,
+    UINT32 cbResponse,
+    UINT32* pcbResponse
+)
+{
+    UINT32 result = TPM_RC_SUCCESS;
+    BYTE* dataIn = NULL;
+    unsigned int dataInSize = 0;
+    if (hVCom == INVALID_HANDLE_VALUE)
+    {
+        OpenTpmConnection(vcomPort);
+    }
+
+    dataIn = GenerateTpmCommandPayload(0, pbCommand, cbCommand, &dataInSize);
+    result = SendTpmSignal(SignalCommand, vcomTimeout, dataIn, dataInSize, pbResponse, cbResponse, pcbResponse);
+
+    if (CloseContext)
+    {
+        CloseHandle(hVCom);
+        hVCom = INVALID_HANDLE_VALUE;
+    }
+
+    if (dataIn) free(dataIn);
+    return result;
+}
+
+void TPMVComTeardown(void)
+{
+    if (hVCom != INVALID_HANDLE_VALUE)
+    {
+        CloseHandle(hVCom);
+        hVCom = INVALID_HANDLE_VALUE;
+    }
+}
+
+BOOL TPMStartup()
+{
+    unsigned char startupClear[] = { 0x80, 0x01, 0x00, 0x00, 0x00, 0x0c, 0x00, 0x00, 0x01, 0x44, 0x00, 0x00 };
+    unsigned char response[10];
+    unsigned int responseSize;
+
+    return ((TPMVComSubmitCommand(FALSE, startupClear, sizeof(startupClear), response, sizeof(response), &responseSize) == TPM_RC_SUCCESS) &&
+        (responseSize == sizeof(response)) &&
+        (*((unsigned int*)response) == 0));
+}
+
+UINT32 TPMShutdown()
+{
+    unsigned char shutdownClear[] = { 0x80, 0x01, 0x00, 0x00, 0x00, 0x0c, 0x00, 0x00, 0x01, 0x45, 0x00, 0x00 };
+    unsigned char response[10];
+    unsigned int responseSize;
+
+    return ((TPMVComSubmitCommand(TRUE, shutdownClear, sizeof(shutdownClear), response, sizeof(response), &responseSize) == TPM_RC_SUCCESS) &&
+        (responseSize == sizeof(response)) &&
+        (*((unsigned int*)response) == 0));
+}
+#ifdef __cplusplus
+}
+#endif
+#endif
+
+#ifdef USE_TPM_VCOM
+// Nucleo-L476RC based TPM on USB-VCOM
+#pragma pack(push, 1)
+#define TPM_VCOM_PORT TEXT("COM6")
+#define SIGNALMAGIC (0x326d7054)
+#define MAX_TPM_COMMAND_SIZE (1024)
+#define TPM_HEADER_SIZE (10)
+#define CMD_RSP_BUFFER_SIZE (MAX_TPM_COMMAND_SIZE)
+typedef enum
+{
+    SignalNothing = 0,
+    SignalShutdown,
+    SignalReset,
+    SignalSetClock,
+    // IN {UINT32 time}
+    SignalCancelOn,
+    SignalCancelOff,
+    SignalCommand,
+    // IN {BYTE Locality, UINT32 InBufferSize, BYTE[InBufferSize] InBuffer}
+    // OUT {UINT32 OutBufferSize, BYTE[OutBufferSize] OutBuffer}
+    SignalResponse,
+    // OUT {UINT32 OutBufferSize, BYTE[OutBufferSize] OutBuffer}
+} signalCode_t;
+
+typedef struct
+{
+    unsigned int magic;
+    signalCode_t signal;
+    unsigned int dataSize;
+} signalHdr_t;
+
+typedef union
+{
+    struct
+    {
+        unsigned int time;
+    } SignalSetClockPayload;
+    struct
+    {
+        unsigned int locality;
+        unsigned int cmdSize;
+        unsigned char cmd[1];
+    } SignalCommandPayload;
+} signalPayload_t, *pSignalPayload_t;
+
+typedef union
+{
+    signalHdr_t s;
+    unsigned char b[sizeof(signalHdr_t)];
+} signalWrapper_t, *pSignalWrapper_t;
+#pragma pack(pop)
+
+UINT32 TPMVComSubmitCommand(
+    BOOL CloseContext,
+    BYTE* pbCommand,
+    UINT32 cbCommand,
+    BYTE* pbResponse,
+    UINT32 cbResponse,
+    UINT32* pcbResponse
+);
+void TPMVComTeardown(void);
+
+#define PlatformSubmitTPM20Command TPMVComSubmitCommand
+
+HANDLE hCom = INVALID_HANDLE_VALUE;
+
+unsigned int GetTimeStamp(void)
+{
+    FILETIME now = { 0 };
+    LARGE_INTEGER convert = { 0 };
+
+    // Get the current timestamp
+    GetSystemTimeAsFileTime(&now);
+    convert.LowPart = now.dwLowDateTime;
+    convert.HighPart = now.dwHighDateTime;
+    convert.QuadPart = (convert.QuadPart - (UINT64)(11644473600000 * 10000)) / 10000000;
+    return convert.LowPart;
+}
+
+unsigned int SetTpmResponseTimeout(unsigned int timeout)
+{
+    COMMTIMEOUTS to = { 0 };
+    to.ReadIntervalTimeout = 0;
+    to.ReadTotalTimeoutMultiplier = 0;
+    to.ReadTotalTimeoutConstant = timeout;
+    to.WriteTotalTimeoutMultiplier = 0;
+    to.WriteTotalTimeoutConstant = 0;
+    if (!SetCommTimeouts(hCom, &to))
+    {
+        return GetLastError();
+    }
+    else
+    {
+        return 0;
+    }
+}
+
+unsigned int SendTpmSignal(signalCode_t signal, unsigned int timeout, BYTE* dataIn, unsigned int dataInSize, BYTE* dataOut, unsigned int dataOutSize, unsigned int* dataOutUsed)
+{
+    unsigned int result = 0;
+    DWORD written = 0;
+    unsigned int signalBufSize = sizeof(signalWrapper_t) + dataInSize;
+    BYTE* signalBuf = malloc(signalBufSize);
+    pSignalWrapper_t sig = (pSignalWrapper_t)signalBuf;
+    sig->s.magic = SIGNALMAGIC;
+    sig->s.signal = signal;
+    sig->s.dataSize = dataInSize;
+    if (dataInSize > 0)
+    {
+        memcpy(&signalBuf[sizeof(signalWrapper_t)], dataIn, dataInSize);
+    }
+
+    PurgeComm(hCom, PURGE_RXCLEAR | PURGE_TXCLEAR);
+    if (!WriteFile(hCom, signalBuf, signalBufSize, &written, NULL))
+    {
+        result = GetLastError();
+        goto Cleanup;
+    }
+
+    if (signal == SignalCommand)
+    {
+        DWORD read = 0;
+        unsigned int rspSize = 0;
+
+        SetTpmResponseTimeout(timeout - 1000);
+        if (!ReadFile(hCom, &rspSize, sizeof(rspSize), (LPDWORD)&read, NULL))
+        {
+            result = GetLastError();
+            goto Cleanup;
+        }
+        if (read == 0)
+        {
+            result = GetLastError();
+            goto Cleanup;
+        }
+
+        read = 0;
+        SetTpmResponseTimeout(1000);
+        if ((!ReadFile(hCom, dataOut, min(rspSize, dataOutSize), (LPDWORD)&read, NULL)) ||
+            (read != rspSize))
+        {
+            result = GetLastError();
+            goto Cleanup;
+        }
+        *dataOutUsed = read;
+        PurgeComm(hCom, PURGE_RXCLEAR);
+
+        //printf("Received[%d]:\n", read);
+        //for (uint32_t n = 0; n < read; n++)
+        //{
+        //    if ((n > 0) && !(n % 16)) printf("\n");
+        //    printf("0x%02x ", dataOut[n]);
+        //}
+        //printf("\n");
+    }
+
+Cleanup:
+    if (signalBuf) free(signalBuf);
+    return result;
+}
+
+BYTE* GenerateTpmCommandPayload(unsigned int locality, BYTE* cmd, UINT32 cmdSize, unsigned int* dataInSize)
+{
+    pSignalPayload_t payload = NULL;
+    *dataInSize = sizeof(payload->SignalCommandPayload) - sizeof(unsigned char) + cmdSize;
+    BYTE* dataIn = malloc(*dataInSize);
+    payload = (pSignalPayload_t)dataIn;
+    payload->SignalCommandPayload.locality = locality;
+    payload->SignalCommandPayload.cmdSize = cmdSize;
+    memcpy(payload->SignalCommandPayload.cmd, cmd, cmdSize);
+    return dataIn;
+}
+
+unsigned int OpenTpmConnection(LPCTSTR comPort)
+{
+    DCB dcb = { 0 };
+    if (hCom != INVALID_HANDLE_VALUE)
+    {
+        CloseHandle(hCom);
+        hCom = INVALID_HANDLE_VALUE;
+    }
+    dcb.DCBlength = sizeof(DCB);
+    dcb.BaudRate = CBR_115200;
+    dcb.fBinary = TRUE;
+    dcb.fParity = FALSE;
+    dcb.ByteSize = 8;
+    dcb.Parity = NOPARITY;
+    dcb.StopBits = ONESTOPBIT;
+    if (((hCom = CreateFile(comPort, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL)) == INVALID_HANDLE_VALUE) ||
+        (!SetCommState(hCom, &dcb)))
+    {
+        return GetLastError();
+    }
+    PurgeComm(hCom, PURGE_RXCLEAR);
+    unsigned int time = GetTimeStamp();
+    SendTpmSignal(SignalSetClock, 500, (BYTE*)&time, sizeof(time), NULL, 0, NULL);
+
+    return 0;
+}
+
+UINT32 TPMVComSubmitCommand(
+    BOOL CloseContext,
+    BYTE* pbCommand,
+    UINT32 cbCommand,
+    BYTE* pbResponse,
+    UINT32 cbResponse,
+    UINT32* pcbResponse
+)
+{
+    UINT32 result = TPM_RC_SUCCESS;
+    BYTE* dataIn = NULL;
+    unsigned int dataInSize = 0;
+    if (hCom == INVALID_HANDLE_VALUE)
+    {
+        OpenTpmConnection(TEXT("COM6"));
+    }
+
+    dataIn = GenerateTpmCommandPayload(0, pbCommand, cbCommand, &dataInSize);
+    result = SendTpmSignal(SignalCommand, 5 * 60 * 1000, dataIn, dataInSize, pbResponse, cbResponse, pcbResponse);
+
+    if (CloseContext)
+    {
+        CloseHandle(hCom);
+        hCom = INVALID_HANDLE_VALUE;
+    }
+
+    if(dataIn) free(dataIn);
+    return result;
+}
+
+void TPMVComTeardown(void)
+{
+    if (hCom != INVALID_HANDLE_VALUE)
+    {
+        CloseHandle(hCom);
+        hCom = INVALID_HANDLE_VALUE;
+    }
+}
+
+UINT32 TPMStartup()
+{
+    DEFINE_CALL_BUFFERS;
+    UINT32 result = TPM_RC_SUCCESS;
+    Startup_In startupIn = { 0 };
+    Startup_Out startupOut = { 0 };
+
+    INITIALIZE_CALL_BUFFERS(TPM2_Startup, &startupIn, &startupOut);
+    startupIn.startupType = TPM_SU_CLEAR;
+    EXECUTE_TPM_CALL(FALSE, TPM2_Startup);
+
+Cleanup:
+    return result;
+}
+
+UINT32 TPMShutdown()
+{
+    DEFINE_CALL_BUFFERS;
+    UINT32 result = TPM_RC_SUCCESS;
+    Shutdown_In shutdownIn = { 0 };
+    Shutdown_Out shutdownOut = { 0 };
+
+    INITIALIZE_CALL_BUFFERS(TPM2_Shutdown, &shutdownIn, &shutdownOut);
+    shutdownIn.shutdownType = TPM_SU_CLEAR;
+    EXECUTE_TPM_CALL(FALSE, TPM2_Shutdown);
+
+Cleanup:
+    return result;
+}
+
+#endif
+
 // Global Handles and Objects
 BCRYPT_KEY_HANDLE g_hAik = NULL;
 BCRYPT_KEY_HANDLE g_hKey = NULL;
@@ -100,7 +645,7 @@ CreateAuthorities()
     BYTE *buffer = NULL;
     INT32 size = 0;
 
-    PlattformRetrieveAuthValues();
+    //PlattformRetrieveAuthValues();
 
     g_StorageOwner.entity.handle = TPM_RH_OWNER;
     buffer = g_StorageOwner.entity.name.t.name;
@@ -135,8 +680,39 @@ CreateSrkObject()
     // Read the SRK public
     INITIALIZE_CALL_BUFFERS(TPM2_ReadPublic, &readPublicIn, &readPublicOut);
     parms.objectTableIn[TPM2_ReadPublic_HdlIn_PublicKey].generic.handle = TPM_20_SRK_HANDLE;
-    EXECUTE_TPM_CALL(FALSE, TPM2_ReadPublic);
-    g_SrkObject = parms.objectTableIn[0];
+    TRY_TPM_CALL(FALSE, TPM2_ReadPublic);
+    if (result == TPM_RC_SUCCESS)
+    {
+        g_SrkObject = parms.objectTableIn[0];
+    }
+    else
+    {
+        CreatePrimary_In createPrimaryIn = { 0 };
+        CreatePrimary_Out createPrimaryOut = { 0 };
+        EvictControl_In evictControlIn = { 0 };
+        EvictControl_Out evictControlOut = { 0 };
+
+        // Create the session
+        sessionTable[0].handle = TPM_RS_PW;
+
+        INITIALIZE_CALL_BUFFERS(TPM2_CreatePrimary, &createPrimaryIn, &createPrimaryOut);
+        parms.objectTableIn[TPM2_CreatePrimary_HdlIn_PrimaryHandle] = g_StorageOwner;
+        SetSrkTemplate(&createPrimaryIn.inPublic);
+        EXECUTE_TPM_CALL(FALSE, TPM2_CreatePrimary);
+        g_SrkObject = parms.objectTableOut[TPM2_CreatePrimary_HdlOut_ObjectHandle];
+
+        INITIALIZE_CALL_BUFFERS(TPM2_EvictControl, &evictControlIn, &evictControlOut);
+        parms.objectTableIn[TPM2_EvictControl_HdlIn_Auth] = g_StorageOwner;
+        parms.objectTableIn[TPM2_EvictControl_HdlIn_ObjectHandle] = g_SrkObject;
+        evictControlIn.persistentHandle = TPM_20_SRK_HANDLE;
+        EXECUTE_TPM_CALL(FALSE, TPM2_EvictControl);
+
+        INITIALIZE_CALL_BUFFERS(TPM2_ReadPublic, &readPublicIn, &readPublicOut);
+        parms.objectTableIn[TPM2_ReadPublic_HdlIn_PublicKey].generic.handle = TPM_20_SRK_HANDLE;
+        EXECUTE_TPM_CALL(FALSE, TPM2_ReadPublic);
+
+        g_SrkObject = parms.objectTableIn[0];
+    }
 
 Cleanup:
     return result;
@@ -4011,7 +4587,7 @@ int __cdecl wmain(int argc, WCHAR* argv[])
     if ((result = BCryptOpenAlgorithmProvider(&hAlg[2], BCRYPT_SHA384_ALGORITHM, NULL, 0)) != 0) goto Cleanup;
 #endif
 #ifdef TPM_ALG_SHA512
-    if ((result = BCryptOpenAlgorithmProvider(&hAlg[3], BCRYPT_SHA512_ALGORITHM, NULL, 0);
+    if ((result = BCryptOpenAlgorithmProvider(&hAlg[3], BCRYPT_SHA512_ALGORITHM, NULL, 0)) != 0) goto Cleanup;
 #endif
     if ((result = BCryptOpenAlgorithmProvider(&hRsaAlg, BCRYPT_RSA_ALGORITHM, NULL, 0)) != 0) goto Cleanup;
     if ((result = BCryptOpenAlgorithmProvider(&hAesAlg, BCRYPT_AES_ALGORITHM, NULL, 0)) != 0) goto Cleanup;
@@ -4021,11 +4597,15 @@ int __cdecl wmain(int argc, WCHAR* argv[])
     _cpri__RsaStartup();
     _cpri__SymStartup();
 
-	wprintf(L"---NOTE-----------------------------------------\n");
-	wprintf(L"* This test has to run elevated in order to access the TPM authValues in the registry.\n");
+#ifdef USE_VCOM_TPM
+    TPMStartup();
+#endif
+
+    wprintf(L"---NOTE-----------------------------------------\n");
+    wprintf(L"* This test has to run elevated in order to access the TPM authValues in the registry.\n");
     wprintf(L"* Not all TPMs may have the full set of ordinals and algorithms implemented, some tests may fail on certain TPMs.\n");
-	wprintf(L"* For full functional test run with TPM 2.0 reference implementation simulator.\n");
-	wprintf(L"---SETUP----------------------------------------\n");
+    wprintf(L"* For full functional test run with TPM 2.0 reference implementation simulator.\n");
+    wprintf(L"---SETUP----------------------------------------\n");
     wprintf(L"RUNNING........CreateAuthorities()\r");
     result = CreateAuthorities();
     if(result) wprintf(L"(0x%08x)\n", result); else wprintf(L"PASS........\n");
@@ -4133,6 +4713,9 @@ int __cdecl wmain(int argc, WCHAR* argv[])
     result = UnloadKeyObjects();
     if(result) wprintf(L"(0x%08x)\n", result); else wprintf(L"PASS........\n");
 Cleanup:
+#ifdef USE_VCOM_TPM
+    TPMShutdown();
+#endif
     return result;
 }
 
