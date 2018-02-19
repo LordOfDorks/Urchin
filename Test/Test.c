@@ -645,7 +645,7 @@ CreateAuthorities()
     BYTE *buffer = NULL;
     INT32 size = 0;
 
-    //PlattformRetrieveAuthValues();
+    PlattformRetrieveAuthValues();
 
     g_StorageOwner.entity.handle = TPM_RH_OWNER;
     buffer = g_StorageOwner.entity.name.t.name;
