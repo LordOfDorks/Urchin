@@ -19,6 +19,7 @@ typedef enum
     ScTrmState_GetConfirmation_GetNvPublicForFPReaderUntrusted,
     ScTrmState_GetConfirmation_GetNvPublicForDisplay,
     ScTrmState_GetConfirmation_GetNvPublicForFPReader,
+    ScTrmState_GetConfirmation_SetTimeout,
     ScTrmState_GetConfirmation_WriteToDisplay,
     ScTrmState_GetConfirmation_ReadFPId,
     ScTrmState_GetConfirmation_ClearDisplay,
