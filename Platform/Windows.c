@@ -19,6 +19,8 @@ THE SOFTWARE IS PROVIDED *AS IS*, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 #include "stdafx.h"
 
+#ifndef NO_WINDOWS
+
 TBS_HCONTEXT g_hTbs = NULL;
 TPM2B_AUTH g_LockoutAuth = { 0 };
 TPM2B_AUTH g_EndorsementAuth = { 0 };
@@ -99,6 +101,22 @@ PlattformRetrieveAuthValues(
     g_EndorsementAuth.t.size = (UINT16)allowedSize;
 }
 
+void
+_cpri__PlatformRelease(
+    void
+)
+{
+    if (g_hTbs != NULL)
+    {
+        Tbsip_Context_Close(g_hTbs);
+        g_hTbs = NULL;
+    }
+
+    _cpri__ReleaseCrypt();
+}
+
+#endif //NO_WINDOWS
+
 int
 TpmFail(
     const char* function,
@@ -112,18 +130,4 @@ TpmFail(
 
     assert(0);
     return 0;
-}
-
-void
-_cpri__PlatformRelease(
-    void
-)
-{
-    if (g_hTbs != NULL)
-    {
-        Tbsip_Context_Close(g_hTbs);
-        g_hTbs = NULL;
-    }
-
-    _cpri__ReleaseCrypt();
 }

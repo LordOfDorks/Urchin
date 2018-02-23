@@ -13012,6 +13012,7 @@ INT32 *size
 
 // Windows defined constants
 #define TPM_20_SRK_HANDLE 0x81000001
+#define TPM_20_EK_HANDLE 0x81010001
 #define TPM_20_TCG_NV_SPACE ((TPM_HT_NV_INDEX << 24) | (0x00 << 22)
 #define TPM_20_OWNER_NV_SPACE ((TPM_HT_NV_INDEX << 24) | (0x01 << 22))
 #define TPM_20_PLATFORM_MANUFACTURER_NV_SPACE ((TPM_HT_NV_INDEX << 24) | (0x02 << 22))
