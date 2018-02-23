@@ -1,6 +1,6 @@
 #pragma once
 
-#define NV_FPBASE_INDEX (0x00008000)
+#define NV_FPBASE_INDEX (0x01008000)
 #define FP_TEMPLATE_SIZE (498)
 #define FP_SLOTS_MAX (200)
 #define FP_SLOTS (2)
