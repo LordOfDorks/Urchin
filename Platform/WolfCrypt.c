@@ -611,9 +611,12 @@ AES_create_key(const unsigned char *userKey,
     PVOID *key)
 {
     TPM2B* keyContext = NULL;
+    size_t contextSize;
+
+    contextSize = sizeof(TPM2B) - sizeof(BYTE) + bits / 8 + 1;
 
     // Remember the key
-    if ((keyContext = (TPM2B*)malloc(sizeof(TPM2B))) != NULL)
+    if ((keyContext = (TPM2B*)malloc(contextSize)) != NULL)
     {
         keyContext->size = bits / 8;
         memcpy(keyContext->buffer, userKey, keyContext->size);
