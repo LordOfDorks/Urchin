@@ -18,573 +18,12 @@ THE SOFTWARE IS PROVIDED *AS IS*, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 // http://www.trustedcomputinggroup.org/resources/tpm_library_specification
 
 #include "stdafx.h"
+#include "..\Platform\Interface.h"
 
 BCRYPT_ALG_HANDLE hRngAlg;
 BCRYPT_ALG_HANDLE hAlg[HASH_COUNT + 1];
 BCRYPT_ALG_HANDLE hRsaAlg;
 BCRYPT_ALG_HANDLE hAesAlg;
-
-#ifdef USE_TPM_SIMULATOR
-// Linked Simulator Hookup
-extern "C"
-{
-UINT32 TPMSimSubmitCommand(
-    BOOL CloseContext,
-    BYTE* pbCommand,
-    UINT32 cbCommand,
-    BYTE* pbResponse,
-    UINT32 cbResponse,
-    UINT32* pcbResponse
-);
-void TPMSimTeardown(void);
-}
-#define PlatformSubmitTPM20Command TPMSimSubmitCommand
-#endif
-
-#ifdef USE_VCOM_TPM
-#ifdef __cplusplus
-extern "C"
-{
-#endif
-
-UINT32 TPMVComSubmitCommand(
-    BOOL CloseContext,
-    BYTE* pbCommand,
-    UINT32 cbCommand,
-    BYTE* pbResponse,
-    UINT32 cbResponse,
-    UINT32* pcbResponse
-);
-void TPMVComTeardown(void);
-#define PlatformSubmitTPM20Command TPMVComSubmitCommand
-
-HANDLE hVCom = INVALID_HANDLE_VALUE;
-LPCTSTR vcomPort = TEXT("COM6");
-unsigned int vcomTimeout = 5 * 60 * 1000;
-
-// Nucleo-L476RC based TPM on USB-VCOM
-#pragma pack(push, 1)
-#define TPM_VCOM_PORT TEXT("COM6")
-#define SIGNALMAGIC (0x326d7054)
-#define MAX_TPM_COMMAND_SIZE (1024)
-#define TPM_HEADER_SIZE (10)
-#define CMD_RSP_BUFFER_SIZE (MAX_TPM_COMMAND_SIZE)
-typedef enum
-{
-    SignalNothing = 0,
-    SignalShutdown,
-    SignalReset,
-    SignalSetClock,
-    // IN {UINT32 time}
-    SignalCancelOn,
-    SignalCancelOff,
-    SignalCommand,
-    // IN {BYTE Locality, UINT32 InBufferSize, BYTE[InBufferSize] InBuffer}
-    // OUT {UINT32 OutBufferSize, BYTE[OutBufferSize] OutBuffer}
-    SignalResponse,
-    // OUT {UINT32 OutBufferSize, BYTE[OutBufferSize] OutBuffer}
-} signalCode_t;
-
-typedef struct
-{
-    unsigned int magic;
-    signalCode_t signal;
-    unsigned int dataSize;
-} signalHdr_t;
-
-typedef union
-{
-    struct
-    {
-        unsigned int time;
-    } SignalSetClockPayload;
-    struct
-    {
-        unsigned int locality;
-        unsigned int cmdSize;
-        unsigned char cmd[1];
-    } SignalCommandPayload;
-} signalPayload_t, *pSignalPayload_t;
-
-typedef union
-{
-    signalHdr_t s;
-    unsigned char b[sizeof(signalHdr_t)];
-} signalWrapper_t, *pSignalWrapper_t;
-#pragma pack(pop)
-
-unsigned int GetTimeStamp(void)
-{
-    FILETIME now = { 0 };
-    LARGE_INTEGER convert = { 0 };
-
-    // Get the current timestamp
-    GetSystemTimeAsFileTime(&now);
-    convert.LowPart = now.dwLowDateTime;
-    convert.HighPart = now.dwHighDateTime;
-    convert.QuadPart = (convert.QuadPart - (UINT64)(11644473600000 * 10000)) / 10000000;
-    return convert.LowPart;
-}
-
-unsigned int SetTpmResponseTimeout(unsigned int timeout)
-{
-    COMMTIMEOUTS to = { 0 };
-    to.ReadIntervalTimeout = 0;
-    to.ReadTotalTimeoutMultiplier = 0;
-    to.ReadTotalTimeoutConstant = timeout;
-    to.WriteTotalTimeoutMultiplier = 0;
-    to.WriteTotalTimeoutConstant = 0;
-    if (!SetCommTimeouts(hVCom, &to))
-    {
-        return GetLastError();
-    }
-    else
-    {
-        return 0;
-    }
-}
-
-unsigned int SendTpmSignal(signalCode_t signal,
-    unsigned int timeout,
-    BYTE* dataIn,
-    unsigned int dataInSize,
-    BYTE* dataOut,
-    unsigned int dataOutSize,
-    unsigned int* dataOutUsed
-)
-{
-    unsigned int result = 0;
-    DWORD written = 0;
-    unsigned int signalBufSize = sizeof(signalWrapper_t) + dataInSize;
-    BYTE* signalBuf = (BYTE*)malloc(signalBufSize);
-    pSignalWrapper_t sig = (pSignalWrapper_t)signalBuf;
-    sig->s.magic = SIGNALMAGIC;
-    sig->s.signal = signal;
-    sig->s.dataSize = dataInSize;
-    if (dataInSize > 0)
-    {
-        memcpy(&signalBuf[sizeof(signalWrapper_t)], dataIn, dataInSize);
-    }
-
-    PurgeComm(hVCom, PURGE_RXCLEAR | PURGE_TXCLEAR);
-    if (!WriteFile(hVCom, signalBuf, signalBufSize, &written, NULL))
-    {
-        result = GetLastError();
-        goto Cleanup;
-    }
-
-    if (signal == SignalCommand)
-    {
-        DWORD read = 0;
-        unsigned int rspSize = 0;
-
-        SetTpmResponseTimeout(timeout - 1000);
-        if (!ReadFile(hVCom, &rspSize, sizeof(rspSize), (LPDWORD)&read, NULL))
-        {
-            result = GetLastError();
-            goto Cleanup;
-        }
-        if (read == 0)
-        {
-            result = GetLastError();
-            goto Cleanup;
-        }
-
-        read = 0;
-        SetTpmResponseTimeout(1000);
-        if ((!ReadFile(hVCom, dataOut, min(rspSize, dataOutSize), (LPDWORD)&read, NULL)) ||
-            (read != rspSize))
-        {
-            result = GetLastError();
-            goto Cleanup;
-        }
-        *dataOutUsed = read;
-        PurgeComm(hVCom, PURGE_RXCLEAR);
-    }
-
-Cleanup:
-    if (signalBuf) free(signalBuf);
-    return result;
-}
-
-BYTE* GenerateTpmCommandPayload(unsigned int locality,
-    BYTE* cmd,
-    UINT32 cmdSize,
-    unsigned int* dataInSize
-)
-{
-    pSignalPayload_t payload = NULL;
-    *dataInSize = sizeof(payload->SignalCommandPayload) - sizeof(unsigned char) + cmdSize;
-    BYTE* dataIn = (BYTE*)malloc(*dataInSize);
-    payload = (pSignalPayload_t)dataIn;
-    payload->SignalCommandPayload.locality = locality;
-    payload->SignalCommandPayload.cmdSize = cmdSize;
-    memcpy(payload->SignalCommandPayload.cmd, cmd, cmdSize);
-    return dataIn;
-}
-
-unsigned int OpenTpmConnection(LPCTSTR comPort)
-{
-    DCB dcb = { 0 };
-    if (hVCom != INVALID_HANDLE_VALUE)
-    {
-        CloseHandle(hVCom);
-        hVCom = INVALID_HANDLE_VALUE;
-    }
-    dcb.DCBlength = sizeof(DCB);
-    dcb.BaudRate = CBR_115200;
-    dcb.fBinary = TRUE;
-    dcb.fParity = FALSE;
-    dcb.ByteSize = 8;
-    dcb.Parity = NOPARITY;
-    dcb.StopBits = ONESTOPBIT;
-    if (((hVCom = CreateFile(comPort, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL)) == INVALID_HANDLE_VALUE) ||
-        (!SetCommState(hVCom, &dcb)))
-    {
-        return GetLastError();
-    }
-    PurgeComm(hVCom, PURGE_RXCLEAR);
-    unsigned int time = GetTimeStamp();
-    SendTpmSignal(SignalSetClock, 500, (BYTE*)&time, sizeof(time), NULL, 0, NULL);
-
-    return 0;
-}
-
-UINT32 TPMVComSubmitCommand(
-    BOOL CloseContext,
-    BYTE* pbCommand,
-    UINT32 cbCommand,
-    BYTE* pbResponse,
-    UINT32 cbResponse,
-    UINT32* pcbResponse
-)
-{
-    UINT32 result = TPM_RC_SUCCESS;
-    BYTE* dataIn = NULL;
-    unsigned int dataInSize = 0;
-    if (hVCom == INVALID_HANDLE_VALUE)
-    {
-        OpenTpmConnection(vcomPort);
-    }
-
-    dataIn = GenerateTpmCommandPayload(0, pbCommand, cbCommand, &dataInSize);
-    result = SendTpmSignal(SignalCommand, vcomTimeout, dataIn, dataInSize, pbResponse, cbResponse, pcbResponse);
-
-    if (CloseContext)
-    {
-        CloseHandle(hVCom);
-        hVCom = INVALID_HANDLE_VALUE;
-    }
-
-    if (dataIn) free(dataIn);
-    return result;
-}
-
-void TPMVComTeardown(void)
-{
-    if (hVCom != INVALID_HANDLE_VALUE)
-    {
-        CloseHandle(hVCom);
-        hVCom = INVALID_HANDLE_VALUE;
-    }
-}
-
-BOOL TPMStartup()
-{
-    unsigned char startupClear[] = { 0x80, 0x01, 0x00, 0x00, 0x00, 0x0c, 0x00, 0x00, 0x01, 0x44, 0x00, 0x00 };
-    unsigned char response[10];
-    unsigned int responseSize;
-
-    return ((TPMVComSubmitCommand(FALSE, startupClear, sizeof(startupClear), response, sizeof(response), &responseSize) == TPM_RC_SUCCESS) &&
-        (responseSize == sizeof(response)) &&
-        (*((unsigned int*)response) == 0));
-}
-
-UINT32 TPMShutdown()
-{
-    unsigned char shutdownClear[] = { 0x80, 0x01, 0x00, 0x00, 0x00, 0x0c, 0x00, 0x00, 0x01, 0x45, 0x00, 0x00 };
-    unsigned char response[10];
-    unsigned int responseSize;
-
-    return ((TPMVComSubmitCommand(TRUE, shutdownClear, sizeof(shutdownClear), response, sizeof(response), &responseSize) == TPM_RC_SUCCESS) &&
-        (responseSize == sizeof(response)) &&
-        (*((unsigned int*)response) == 0));
-}
-#ifdef __cplusplus
-}
-#endif
-#endif
-
-#ifdef USE_TPM_VCOM
-// Nucleo-L476RC based TPM on USB-VCOM
-#pragma pack(push, 1)
-#define TPM_VCOM_PORT TEXT("COM6")
-#define SIGNALMAGIC (0x326d7054)
-#define MAX_TPM_COMMAND_SIZE (1024)
-#define TPM_HEADER_SIZE (10)
-#define CMD_RSP_BUFFER_SIZE (MAX_TPM_COMMAND_SIZE)
-typedef enum
-{
-    SignalNothing = 0,
-    SignalShutdown,
-    SignalReset,
-    SignalSetClock,
-    // IN {UINT32 time}
-    SignalCancelOn,
-    SignalCancelOff,
-    SignalCommand,
-    // IN {BYTE Locality, UINT32 InBufferSize, BYTE[InBufferSize] InBuffer}
-    // OUT {UINT32 OutBufferSize, BYTE[OutBufferSize] OutBuffer}
-    SignalResponse,
-    // OUT {UINT32 OutBufferSize, BYTE[OutBufferSize] OutBuffer}
-} signalCode_t;
-
-typedef struct
-{
-    unsigned int magic;
-    signalCode_t signal;
-    unsigned int dataSize;
-} signalHdr_t;
-
-typedef union
-{
-    struct
-    {
-        unsigned int time;
-    } SignalSetClockPayload;
-    struct
-    {
-        unsigned int locality;
-        unsigned int cmdSize;
-        unsigned char cmd[1];
-    } SignalCommandPayload;
-} signalPayload_t, *pSignalPayload_t;
-
-typedef union
-{
-    signalHdr_t s;
-    unsigned char b[sizeof(signalHdr_t)];
-} signalWrapper_t, *pSignalWrapper_t;
-#pragma pack(pop)
-
-UINT32 TPMVComSubmitCommand(
-    BOOL CloseContext,
-    BYTE* pbCommand,
-    UINT32 cbCommand,
-    BYTE* pbResponse,
-    UINT32 cbResponse,
-    UINT32* pcbResponse
-);
-void TPMVComTeardown(void);
-
-#define PlatformSubmitTPM20Command TPMVComSubmitCommand
-
-HANDLE hCom = INVALID_HANDLE_VALUE;
-
-unsigned int GetTimeStamp(void)
-{
-    FILETIME now = { 0 };
-    LARGE_INTEGER convert = { 0 };
-
-    // Get the current timestamp
-    GetSystemTimeAsFileTime(&now);
-    convert.LowPart = now.dwLowDateTime;
-    convert.HighPart = now.dwHighDateTime;
-    convert.QuadPart = (convert.QuadPart - (UINT64)(11644473600000 * 10000)) / 10000000;
-    return convert.LowPart;
-}
-
-unsigned int SetTpmResponseTimeout(unsigned int timeout)
-{
-    COMMTIMEOUTS to = { 0 };
-    to.ReadIntervalTimeout = 0;
-    to.ReadTotalTimeoutMultiplier = 0;
-    to.ReadTotalTimeoutConstant = timeout;
-    to.WriteTotalTimeoutMultiplier = 0;
-    to.WriteTotalTimeoutConstant = 0;
-    if (!SetCommTimeouts(hCom, &to))
-    {
-        return GetLastError();
-    }
-    else
-    {
-        return 0;
-    }
-}
-
-unsigned int SendTpmSignal(signalCode_t signal, unsigned int timeout, BYTE* dataIn, unsigned int dataInSize, BYTE* dataOut, unsigned int dataOutSize, unsigned int* dataOutUsed)
-{
-    unsigned int result = 0;
-    DWORD written = 0;
-    unsigned int signalBufSize = sizeof(signalWrapper_t) + dataInSize;
-    BYTE* signalBuf = malloc(signalBufSize);
-    pSignalWrapper_t sig = (pSignalWrapper_t)signalBuf;
-    sig->s.magic = SIGNALMAGIC;
-    sig->s.signal = signal;
-    sig->s.dataSize = dataInSize;
-    if (dataInSize > 0)
-    {
-        memcpy(&signalBuf[sizeof(signalWrapper_t)], dataIn, dataInSize);
-    }
-
-    PurgeComm(hCom, PURGE_RXCLEAR | PURGE_TXCLEAR);
-    if (!WriteFile(hCom, signalBuf, signalBufSize, &written, NULL))
-    {
-        result = GetLastError();
-        goto Cleanup;
-    }
-
-    if (signal == SignalCommand)
-    {
-        DWORD read = 0;
-        unsigned int rspSize = 0;
-
-        SetTpmResponseTimeout(timeout - 1000);
-        if (!ReadFile(hCom, &rspSize, sizeof(rspSize), (LPDWORD)&read, NULL))
-        {
-            result = GetLastError();
-            goto Cleanup;
-        }
-        if (read == 0)
-        {
-            result = GetLastError();
-            goto Cleanup;
-        }
-
-        read = 0;
-        SetTpmResponseTimeout(1000);
-        if ((!ReadFile(hCom, dataOut, min(rspSize, dataOutSize), (LPDWORD)&read, NULL)) ||
-            (read != rspSize))
-        {
-            result = GetLastError();
-            goto Cleanup;
-        }
-        *dataOutUsed = read;
-        PurgeComm(hCom, PURGE_RXCLEAR);
-
-        //printf("Received[%d]:\n", read);
-        //for (uint32_t n = 0; n < read; n++)
-        //{
-        //    if ((n > 0) && !(n % 16)) printf("\n");
-        //    printf("0x%02x ", dataOut[n]);
-        //}
-        //printf("\n");
-    }
-
-Cleanup:
-    if (signalBuf) free(signalBuf);
-    return result;
-}
-
-BYTE* GenerateTpmCommandPayload(unsigned int locality, BYTE* cmd, UINT32 cmdSize, unsigned int* dataInSize)
-{
-    pSignalPayload_t payload = NULL;
-    *dataInSize = sizeof(payload->SignalCommandPayload) - sizeof(unsigned char) + cmdSize;
-    BYTE* dataIn = malloc(*dataInSize);
-    payload = (pSignalPayload_t)dataIn;
-    payload->SignalCommandPayload.locality = locality;
-    payload->SignalCommandPayload.cmdSize = cmdSize;
-    memcpy(payload->SignalCommandPayload.cmd, cmd, cmdSize);
-    return dataIn;
-}
-
-unsigned int OpenTpmConnection(LPCTSTR comPort)
-{
-    DCB dcb = { 0 };
-    if (hCom != INVALID_HANDLE_VALUE)
-    {
-        CloseHandle(hCom);
-        hCom = INVALID_HANDLE_VALUE;
-    }
-    dcb.DCBlength = sizeof(DCB);
-    dcb.BaudRate = CBR_115200;
-    dcb.fBinary = TRUE;
-    dcb.fParity = FALSE;
-    dcb.ByteSize = 8;
-    dcb.Parity = NOPARITY;
-    dcb.StopBits = ONESTOPBIT;
-    if (((hCom = CreateFile(comPort, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL)) == INVALID_HANDLE_VALUE) ||
-        (!SetCommState(hCom, &dcb)))
-    {
-        return GetLastError();
-    }
-    PurgeComm(hCom, PURGE_RXCLEAR);
-    unsigned int time = GetTimeStamp();
-    SendTpmSignal(SignalSetClock, 500, (BYTE*)&time, sizeof(time), NULL, 0, NULL);
-
-    return 0;
-}
-
-UINT32 TPMVComSubmitCommand(
-    BOOL CloseContext,
-    BYTE* pbCommand,
-    UINT32 cbCommand,
-    BYTE* pbResponse,
-    UINT32 cbResponse,
-    UINT32* pcbResponse
-)
-{
-    UINT32 result = TPM_RC_SUCCESS;
-    BYTE* dataIn = NULL;
-    unsigned int dataInSize = 0;
-    if (hCom == INVALID_HANDLE_VALUE)
-    {
-        OpenTpmConnection(TEXT("COM6"));
-    }
-
-    dataIn = GenerateTpmCommandPayload(0, pbCommand, cbCommand, &dataInSize);
-    result = SendTpmSignal(SignalCommand, 5 * 60 * 1000, dataIn, dataInSize, pbResponse, cbResponse, pcbResponse);
-
-    if (CloseContext)
-    {
-        CloseHandle(hCom);
-        hCom = INVALID_HANDLE_VALUE;
-    }
-
-    if(dataIn) free(dataIn);
-    return result;
-}
-
-void TPMVComTeardown(void)
-{
-    if (hCom != INVALID_HANDLE_VALUE)
-    {
-        CloseHandle(hCom);
-        hCom = INVALID_HANDLE_VALUE;
-    }
-}
-
-UINT32 TPMStartup()
-{
-    DEFINE_CALL_BUFFERS;
-    UINT32 result = TPM_RC_SUCCESS;
-    Startup_In startupIn = { 0 };
-    Startup_Out startupOut = { 0 };
-
-    INITIALIZE_CALL_BUFFERS(TPM2_Startup, &startupIn, &startupOut);
-    startupIn.startupType = TPM_SU_CLEAR;
-    EXECUTE_TPM_CALL(FALSE, TPM2_Startup);
-
-Cleanup:
-    return result;
-}
-
-UINT32 TPMShutdown()
-{
-    DEFINE_CALL_BUFFERS;
-    UINT32 result = TPM_RC_SUCCESS;
-    Shutdown_In shutdownIn = { 0 };
-    Shutdown_Out shutdownOut = { 0 };
-
-    INITIALIZE_CALL_BUFFERS(TPM2_Shutdown, &shutdownIn, &shutdownOut);
-    shutdownIn.shutdownType = TPM_SU_CLEAR;
-    EXECUTE_TPM_CALL(FALSE, TPM2_Shutdown);
-
-Cleanup:
-    return result;
-}
-
-#endif
 
 // Global Handles and Objects
 BCRYPT_KEY_HANDLE g_hAik = NULL;
@@ -593,6 +32,10 @@ ANY_OBJECT g_EkObject = {0};
 ANY_OBJECT g_SrkObject = {0};
 ANY_OBJECT g_AikObject = {0};
 ANY_OBJECT g_KeyObject = {0};
+#ifdef NO_WINDOWS
+TPMS_CONTEXT g_AikContext = {0};
+TPMS_CONTEXT g_KeyContext = {0};
+#endif
 ANY_OBJECT g_Lockout = {0};
 ANY_OBJECT g_Endorsement = {0};
 ANY_OBJECT g_StorageOwner = {0};
@@ -602,6 +45,45 @@ const char g_KeyCreationNonce[32] = "RandomServerPickedCreationNonce";
 TPM2B_CREATION_DATA g_KeyCreationData = {0};
 TPM2B_DIGEST g_KeyCreationHash = {0};
 TPMT_TK_CREATION g_KeyCreationTicket = {0};
+
+BOOL WriteToFile(PCWSTR fileName, BYTE* dataOut, UINT32 sizeOut)
+{
+    BOOL result = FALSE;
+    DWORD written = 0;
+    HANDLE hFile = CreateFileW(fileName, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) goto Cleanup;
+    for (DWORD cursor = 0; cursor < sizeOut; cursor += written)
+    {
+        if (!WriteFile(hFile, &dataOut[cursor], sizeOut - cursor, &written, NULL))
+        {
+            goto Cleanup;
+        }
+    }
+    result = TRUE;
+Cleanup:
+    CloseHandle(hFile);
+    return result;
+}
+
+BOOL ReadFromFile(PCWSTR fileName, BYTE* dataIn, UINT32 dataInSize, UINT32* sizeIn)
+{
+    BOOL result = FALSE;
+    DWORD read = 0;
+    HANDLE hFile = CreateFileW(fileName, GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) goto Cleanup;
+    *sizeIn = min(GetFileSize(hFile, NULL), dataInSize);
+    for (INT32 cursor = 0; cursor < (INT32)*sizeIn; cursor += read)
+    {
+        if (!ReadFile(hFile, &dataIn[cursor], *sizeIn - cursor, &read, NULL))
+        {
+            goto Cleanup;
+        }
+    }
+    result = TRUE;
+Cleanup:
+    CloseHandle(hFile);
+    return result;
+}
 
 UINT32
 ImportPubKey(
@@ -645,25 +127,27 @@ CreateAuthorities()
     BYTE *buffer = NULL;
     INT32 size = 0;
 
-    PlattformRetrieveAuthValues();
-
     g_StorageOwner.entity.handle = TPM_RH_OWNER;
     buffer = g_StorageOwner.entity.name.t.name;
     size = sizeof(g_StorageOwner.entity.name.t.name);
     g_StorageOwner.entity.name.t.size = TPM_HANDLE_Marshal(&g_StorageOwner.entity.handle, &buffer, &size);
-    g_StorageOwner.entity.authValue = g_StorageAuth;
 
     g_Endorsement.entity.handle = TPM_RH_ENDORSEMENT;
     buffer = g_Endorsement.entity.name.t.name;
     size = sizeof(g_Endorsement.entity.name.t.name);
     g_Endorsement.entity.name.t.size = TPM_HANDLE_Marshal(&g_Endorsement.entity.handle, &buffer, &size);
-    g_Endorsement.entity.authValue = g_EndorsementAuth;
 
     g_Lockout.entity.handle = TPM_RH_LOCKOUT;
     buffer = g_Lockout.entity.name.t.name;
     size = sizeof(g_Lockout.entity.name.t.name);
     g_Lockout.entity.name.t.size = TPM_HANDLE_Marshal(&g_Lockout.entity.handle, &buffer, &size);
+
+#ifndef USE_VCOM_TPM
+    PlattformRetrieveAuthValues();
+    g_StorageOwner.entity.authValue = g_StorageAuth;
+    g_Endorsement.entity.authValue = g_EndorsementAuth;
     g_Lockout.entity.authValue = g_LockoutAuth;
+#endif
 
 //Cleanup:
     return TPM_RC_SUCCESS;
@@ -691,6 +175,9 @@ CreateSrkObject()
         CreatePrimary_Out createPrimaryOut = { 0 };
         EvictControl_In evictControlIn = { 0 };
         EvictControl_Out evictControlOut = { 0 };
+        FlushContext_In flushContextIn = { 0 };
+        FlushContext_Out flushContextOut = { 0 };
+        UINT32 srkHandle = 0;
 
         // Create the session
         sessionTable[0].handle = TPM_RS_PW;
@@ -700,6 +187,7 @@ CreateSrkObject()
         SetSrkTemplate(&createPrimaryIn.inPublic);
         EXECUTE_TPM_CALL(FALSE, TPM2_CreatePrimary);
         g_SrkObject = parms.objectTableOut[TPM2_CreatePrimary_HdlOut_ObjectHandle];
+        srkHandle = g_SrkObject.obj.handle;
 
         INITIALIZE_CALL_BUFFERS(TPM2_EvictControl, &evictControlIn, &evictControlOut);
         parms.objectTableIn[TPM2_EvictControl_HdlIn_Auth] = g_StorageOwner;
@@ -707,11 +195,17 @@ CreateSrkObject()
         evictControlIn.persistentHandle = TPM_20_SRK_HANDLE;
         EXECUTE_TPM_CALL(FALSE, TPM2_EvictControl);
 
+        INITIALIZE_CALL_BUFFERS(TPM2_FlushContext, &flushContextIn, &flushContextOut);
+        parms.objectTableIn[TPM2_FlushContext_HdlIn_FlushHandle].generic.handle = srkHandle;
+        EXECUTE_TPM_CALL(FALSE, TPM2_FlushContext);
+
         INITIALIZE_CALL_BUFFERS(TPM2_ReadPublic, &readPublicIn, &readPublicOut);
         parms.objectTableIn[TPM2_ReadPublic_HdlIn_PublicKey].generic.handle = TPM_20_SRK_HANDLE;
         EXECUTE_TPM_CALL(FALSE, TPM2_ReadPublic);
 
         g_SrkObject = parms.objectTableIn[0];
+        DeleteFileW(L"CachedAIK.bin");
+        DeleteFileW(L"CachedKEY.bin");
     }
 
 Cleanup:
@@ -723,20 +217,53 @@ CreateEkObject()
 {
     DEFINE_CALL_BUFFERS;
     UINT32 result = TPM_RC_SUCCESS;
-    CreatePrimary_In createPrimaryIn = {0};
-    CreatePrimary_Out createPrimaryOut = {0};
+    ReadPublic_Out readPublicIn;
+    ReadPublic_Out readPublicOut = { 0 };
 
-    // Create the session
-    sessionTable[0].handle = TPM_RS_PW;
+    // Read the SRK public
+    INITIALIZE_CALL_BUFFERS(TPM2_ReadPublic, &readPublicIn, &readPublicOut);
+    parms.objectTableIn[TPM2_ReadPublic_HdlIn_PublicKey].generic.handle = TPM_20_EK_HANDLE;
+    TRY_TPM_CALL(FALSE, TPM2_ReadPublic);
+    if (result == TPM_RC_SUCCESS)
+    {
+        g_EkObject = parms.objectTableIn[0];
+    }
+    else
+    {
+        CreatePrimary_In createPrimaryIn = { 0 };
+        CreatePrimary_Out createPrimaryOut = { 0 };
+        EvictControl_In evictControlIn = { 0 };
+        EvictControl_Out evictControlOut = { 0 };
+        FlushContext_In flushContextIn = { 0 };
+        FlushContext_Out flushContextOut = { 0 };
+        UINT32 ekHandle = 0;
 
-    // Create the EK
-    INITIALIZE_CALL_BUFFERS(TPM2_CreatePrimary, &createPrimaryIn, &createPrimaryOut);
-    parms.objectTableIn[TPM2_CreatePrimary_HdlIn_PrimaryHandle] = g_Endorsement;
-    SetEkTemplate(&createPrimaryIn.inPublic);
-    EXECUTE_TPM_CALL(FALSE, TPM2_CreatePrimary);
+        // Create the session
+        sessionTable[0].handle = TPM_RS_PW;
 
-    // Copy the EK out
-    g_EkObject = parms.objectTableOut[TPM2_CreatePrimary_HdlOut_ObjectHandle];
+        INITIALIZE_CALL_BUFFERS(TPM2_CreatePrimary, &createPrimaryIn, &createPrimaryOut);
+        parms.objectTableIn[TPM2_CreatePrimary_HdlIn_PrimaryHandle] = g_Endorsement;
+        SetEkTemplate(&createPrimaryIn.inPublic);
+        EXECUTE_TPM_CALL(FALSE, TPM2_CreatePrimary);
+        g_EkObject = parms.objectTableOut[TPM2_CreatePrimary_HdlOut_ObjectHandle];
+        ekHandle = g_SrkObject.obj.handle;
+
+        INITIALIZE_CALL_BUFFERS(TPM2_EvictControl, &evictControlIn, &evictControlOut);
+        parms.objectTableIn[TPM2_EvictControl_HdlIn_Auth] = g_StorageOwner;
+        parms.objectTableIn[TPM2_EvictControl_HdlIn_ObjectHandle] = g_EkObject;
+        evictControlIn.persistentHandle = TPM_20_EK_HANDLE;
+        EXECUTE_TPM_CALL(FALSE, TPM2_EvictControl);
+
+        INITIALIZE_CALL_BUFFERS(TPM2_FlushContext, &flushContextIn, &flushContextOut);
+        parms.objectTableIn[TPM2_FlushContext_HdlIn_FlushHandle].generic.handle = ekHandle;
+        EXECUTE_TPM_CALL(FALSE, TPM2_FlushContext);
+
+        INITIALIZE_CALL_BUFFERS(TPM2_ReadPublic, &readPublicIn, &readPublicOut);
+        parms.objectTableIn[TPM2_ReadPublic_HdlIn_PublicKey].generic.handle = TPM_20_EK_HANDLE;
+        EXECUTE_TPM_CALL(FALSE, TPM2_ReadPublic);
+
+        g_EkObject = parms.objectTableIn[0];
+    }
 
 Cleanup:
     return result;
@@ -755,69 +282,140 @@ CreateAndLoadAikObject()
     Create_Out createOut = {0};
     Load_In loadIn = {0};
     Load_Out loadOut = {0};
+#ifdef NO_WINDOWS
+    ContextSave_In contextSaveIn = {0};
+    ContextSave_Out contextSaveOut = {0};
+    FlushContext_In flushContextIn = {0};
+    FlushContext_Out flushContextOut = {0};
+#endif
 
-    // Test the key paramters to see if they are supported without kicking off a key creation
-    INITIALIZE_CALL_BUFFERS(TPM2_TestParms, &testParmsIn, &testParmsOut);
-    testParmsIn.parameters.type = TPM_ALG_RSA;
-    testParmsIn.parameters.parameters.symDetail.algorithm = TPM_ALG_NULL;
-    testParmsIn.parameters.parameters.rsaDetail.scheme.scheme = TPM_ALG_RSAPSS;
-    testParmsIn.parameters.parameters.rsaDetail.scheme.details.rsapss.hashAlg = TPM_ALG_SHA256;
-    testParmsIn.parameters.parameters.rsaDetail.keyBits = 2048;
-    TRY_TPM_CALL(FALSE, TPM2_TestParms);
-	if((result != TPM_RC_SUCCESS) && (result != TPM_E_COMMAND_BLOCKED))
-	{
-		// This command may not be implemented. That's no big deal
-		goto Cleanup;
-	}
+    // Initialize the key
+    g_AikObject.obj.handle = TPM_RH_NULL;
 
-    // Create the session
-    sessionTable[0].handle = TPM_RS_PW;
+    // Do we have a cached AIK already?
+    if (ReadFromFile(L"CachedAIK.bin", pbCmd, sizeof(pbCmd), &cbCmd))
+    {
+        buffer = pbCmd;
+        size = cbCmd;
+        if ((TPM2B_PUBLIC_Unmarshal(&g_AikObject.obj.publicArea, &buffer, &size, TRUE) == TPM_RC_SUCCESS) &&
+            (TPM2B_PRIVATE_Unmarshal(&g_AikObject.obj.privateArea, &buffer, &size) == TPM_RC_SUCCESS) &&
+            (TPM2B_AUTH_Unmarshal(&g_AikObject.obj.authValue, &buffer, &size) == TPM_RC_SUCCESS))// &&
+            //(TPM2B_CREATION_DATA_Unmarshal(&g_AikCreationData, &buffer, &size) == TPM_RC_SUCCESS) &&
+            //(TPM2B_DIGEST_Unmarshal(&g_AikCreationHash, &buffer, &size) == TPM_RC_SUCCESS) &&
+            //(TPMT_TK_CREATION_Unmarshal(&g_AikCreationTicket, &buffer, &size) == TPM_RC_SUCCESS))
+        {
+            // Create the session
+            sessionTable[0].handle = TPM_RS_PW;
 
-    // Create the key
-    INITIALIZE_CALL_BUFFERS(TPM2_Create, &createIn, &createOut);
-    parms.objectTableIn[TPM2_Create_HdlIn_ParentHandle] = g_SrkObject;
-    createIn.inSensitive.t.sensitive.userAuth.t.size = sizeof(g_UsageAuth);
-    MemoryCopy(createIn.inSensitive.t.sensitive.userAuth.t.buffer, g_UsageAuth, createIn.inSensitive.t.sensitive.userAuth.t.size, sizeof(createIn.inSensitive.t.sensitive.userAuth.t.buffer));
-    MemoryRemoveTrailingZeros(&createIn.inSensitive.t.sensitive.userAuth);
+            // Try to load the key
+            INITIALIZE_CALL_BUFFERS(TPM2_Load, &loadIn, &loadOut);
+            parms.objectTableIn[TPM2_Load_HdlIn_ParentHandle] = g_SrkObject;
+            parms.objectTableOut[TPM2_Load_HdlOut_ObjectHandle] = g_AikObject; // Copy the key in to be updated
+            loadIn.inPublic = g_AikObject.obj.publicArea;
+            loadIn.inPrivate = g_AikObject.obj.privateArea;
+            TRY_TPM_CALL(FALSE, TPM2_Load);
+            if (result == TPM_RC_SUCCESS)
+            {
+                // Copy the updated key back out
+                g_AikObject = parms.objectTableOut[TPM2_Load_HdlOut_ObjectHandle];
+            }
+            else
+            {
+                DeleteFileW(L"CachedAIK.bin");
+                memset(&g_AikObject, 0x00, sizeof(g_AikObject));
+                g_AikObject.obj.handle = TPM_RH_NULL;
+            }
+        }
+    }
 
-    // Calculate the admin policy for an AIK
-    createIn.inPublic.t.publicArea.authPolicy.t.size = SHA256_DIGEST_SIZE;
-    policyCommandCodeIn.code = TPM_CC_ActivateCredential;
-    TPM2_PolicyCommandCode_CalculateUpdate(TPM_ALG_SHA256, &createIn.inPublic.t.publicArea.authPolicy, &policyCommandCodeIn);
-    TPM2_PolicyAuthValue_CalculateUpdate(TPM_ALG_SHA256, &createIn.inPublic.t.publicArea.authPolicy, &policyAuthValueIn);
+    if (g_AikObject.obj.handle == TPM_RH_NULL)
+    {
+        // Test the key paramters to see if they are supported without kicking off a key creation
+        INITIALIZE_CALL_BUFFERS(TPM2_TestParms, &testParmsIn, &testParmsOut);
+        testParmsIn.parameters.type = TPM_ALG_RSA;
+        testParmsIn.parameters.parameters.symDetail.algorithm = TPM_ALG_NULL;
+        testParmsIn.parameters.parameters.rsaDetail.scheme.scheme = TPM_ALG_RSAPSS;
+        testParmsIn.parameters.parameters.rsaDetail.scheme.details.rsapss.hashAlg = TPM_ALG_SHA256;
+        testParmsIn.parameters.parameters.rsaDetail.keyBits = 2048;
+        TRY_TPM_CALL(FALSE, TPM2_TestParms);
+        if ((result != TPM_RC_SUCCESS) && (result != TPM_E_COMMAND_BLOCKED))
+        {
+            // This command may not be implemented. That's no big deal
+            goto Cleanup;
+        }
 
-    createIn.inPublic.t.publicArea.type = TPM_ALG_RSA;
-    createIn.inPublic.t.publicArea.nameAlg = TPM_ALG_SHA256;
-    createIn.inPublic.t.publicArea.objectAttributes.fixedTPM = 1;
-    createIn.inPublic.t.publicArea.objectAttributes.fixedParent = 1;
-    createIn.inPublic.t.publicArea.objectAttributes.sensitiveDataOrigin = 1;
-    createIn.inPublic.t.publicArea.objectAttributes.userWithAuth = 1;
-    createIn.inPublic.t.publicArea.objectAttributes.adminWithPolicy = 1;
-    createIn.inPublic.t.publicArea.objectAttributes.noDA = 1;
-    createIn.inPublic.t.publicArea.objectAttributes.restricted = 1;
-    createIn.inPublic.t.publicArea.objectAttributes.sign = 1;
-    createIn.inPublic.t.publicArea.parameters.symDetail.algorithm = TPM_ALG_NULL;
-    createIn.inPublic.t.publicArea.parameters.rsaDetail.scheme.scheme = TPM_ALG_RSAPSS;
-    createIn.inPublic.t.publicArea.parameters.rsaDetail.scheme.details.rsapss.hashAlg = TPM_ALG_SHA256;
-    createIn.inPublic.t.publicArea.parameters.rsaDetail.keyBits = 2048;
-    createIn.inPublic.t.publicArea.unique.rsa.b.size = 256;
-    EXECUTE_TPM_CALL(FALSE, TPM2_Create);
+        // Create the session
+        sessionTable[0].handle = TPM_RS_PW;
 
-    // Build the key object
-    g_AikObject.obj.publicArea = createOut.outPublic;
-    g_AikObject.obj.privateArea = createOut.outPrivate;
-    g_AikObject.obj.authValue = createIn.inSensitive.t.sensitive.userAuth;
+        // Create the key
+        INITIALIZE_CALL_BUFFERS(TPM2_Create, &createIn, &createOut);
+        parms.objectTableIn[TPM2_Create_HdlIn_ParentHandle] = g_SrkObject;
+        createIn.inSensitive.t.sensitive.userAuth.t.size = sizeof(g_UsageAuth);
+        MemoryCopy(createIn.inSensitive.t.sensitive.userAuth.t.buffer, g_UsageAuth, createIn.inSensitive.t.sensitive.userAuth.t.size, sizeof(createIn.inSensitive.t.sensitive.userAuth.t.buffer));
+        MemoryRemoveTrailingZeros(&createIn.inSensitive.t.sensitive.userAuth);
 
-    // Load the key
-    INITIALIZE_CALL_BUFFERS(TPM2_Load, &loadIn, &loadOut);
-    parms.objectTableIn[TPM2_Load_HdlIn_ParentHandle] = g_SrkObject;
-    parms.objectTableOut[TPM2_Load_HdlOut_ObjectHandle] = g_AikObject; // Copy the key in to be updated
-    loadIn.inPublic = g_AikObject.obj.publicArea;
-    loadIn.inPrivate = g_AikObject.obj.privateArea;
-    EXECUTE_TPM_CALL(FALSE, TPM2_Load);
+        // Calculate the admin policy for an AIK
+        createIn.inPublic.t.publicArea.authPolicy.t.size = SHA256_DIGEST_SIZE;
+        policyCommandCodeIn.code = TPM_CC_ActivateCredential;
+        TPM2_PolicyCommandCode_CalculateUpdate(TPM_ALG_SHA256, &createIn.inPublic.t.publicArea.authPolicy, &policyCommandCodeIn);
+        TPM2_PolicyAuthValue_CalculateUpdate(TPM_ALG_SHA256, &createIn.inPublic.t.publicArea.authPolicy, &policyAuthValueIn);
 
-    // Copy the updated key back out
-    g_AikObject = parms.objectTableOut[TPM2_Load_HdlOut_ObjectHandle];
+        createIn.inPublic.t.publicArea.type = TPM_ALG_RSA;
+        createIn.inPublic.t.publicArea.nameAlg = TPM_ALG_SHA256;
+        createIn.inPublic.t.publicArea.objectAttributes.fixedTPM = 1;
+        createIn.inPublic.t.publicArea.objectAttributes.fixedParent = 1;
+        createIn.inPublic.t.publicArea.objectAttributes.sensitiveDataOrigin = 1;
+        createIn.inPublic.t.publicArea.objectAttributes.userWithAuth = 1;
+        createIn.inPublic.t.publicArea.objectAttributes.adminWithPolicy = 1;
+        createIn.inPublic.t.publicArea.objectAttributes.noDA = 1;
+        createIn.inPublic.t.publicArea.objectAttributes.restricted = 1;
+        createIn.inPublic.t.publicArea.objectAttributes.sign = 1;
+        createIn.inPublic.t.publicArea.parameters.symDetail.algorithm = TPM_ALG_NULL;
+        createIn.inPublic.t.publicArea.parameters.rsaDetail.scheme.scheme = TPM_ALG_RSAPSS;
+        createIn.inPublic.t.publicArea.parameters.rsaDetail.scheme.details.rsapss.hashAlg = TPM_ALG_SHA256;
+        createIn.inPublic.t.publicArea.parameters.rsaDetail.keyBits = 2048;
+        createIn.inPublic.t.publicArea.unique.rsa.b.size = 256;
+        EXECUTE_TPM_CALL(FALSE, TPM2_Create);
+
+        // Build the key object
+        g_AikObject.obj.publicArea = createOut.outPublic;
+        g_AikObject.obj.privateArea = createOut.outPrivate;
+        g_AikObject.obj.authValue = createIn.inSensitive.t.sensitive.userAuth;
+
+        // Load the key
+        INITIALIZE_CALL_BUFFERS(TPM2_Load, &loadIn, &loadOut);
+        parms.objectTableIn[TPM2_Load_HdlIn_ParentHandle] = g_SrkObject;
+        parms.objectTableOut[TPM2_Load_HdlOut_ObjectHandle] = g_AikObject; // Copy the key in to be updated
+        loadIn.inPublic = g_AikObject.obj.publicArea;
+        loadIn.inPrivate = g_AikObject.obj.privateArea;
+        EXECUTE_TPM_CALL(FALSE, TPM2_Load);
+
+        // Copy the updated key back out
+        g_AikObject = parms.objectTableOut[TPM2_Load_HdlOut_ObjectHandle];
+
+        // Cache the key
+        buffer = pbCmd;
+        size = sizeof(pbCmd);
+        cbCmd = TPM2B_PUBLIC_Marshal(&g_AikObject.obj.publicArea, &buffer, &size);
+        cbCmd += TPM2B_PRIVATE_Marshal(&g_AikObject.obj.privateArea, &buffer, &size);
+        cbCmd += TPM2B_AUTH_Marshal(&g_AikObject.obj.authValue, &buffer, &size);
+        //cbCmd += TPM2B_CREATION_DATA_Marshal(&g_AikCreationData, &buffer, &size);
+        //cbCmd += TPM2B_DIGEST_Marshal(&g_AikCreationHash, &buffer, &size);
+        //cbCmd += TPMT_TK_CREATION_Marshal(&g_AikCreationTicket, &buffer, &size);
+        WriteToFile(L"CachedAIK.bin", pbCmd, cbCmd);
+    }
+
+#ifdef NO_WINDOWS
+    // Save the context and remove it from the TPM
+    INITIALIZE_CALL_BUFFERS(TPM2_ContextSave, &contextSaveIn, &contextSaveOut);
+    parms.objectTableIn[TPM2_ContextSave_HdlIn_SaveHandle] = g_AikObject;
+    EXECUTE_TPM_CALL(FALSE, TPM2_ContextSave);
+    g_AikContext = contextSaveOut.context;
+    INITIALIZE_CALL_BUFFERS(TPM2_FlushContext, &flushContextIn, &flushContextOut);
+    parms.objectTableIn[TPM2_FlushContext_HdlIn_FlushHandle] = g_AikObject;
+    EXECUTE_TPM_CALL(FALSE, TPM2_FlushContext);
+    g_AikObject.obj.handle = TPM_RH_NULL;
+#endif
 
     // Get the BCrypt Handle for the pubKey
     if((result = ImportPubKey(&g_hAik, &g_AikObject)) != 0)
@@ -841,83 +439,154 @@ CreateAndLoadKeyObject()
     PolicyOR_In policyORIn = {0};
     PolicyCommandCode_In policyCommandCodeIn = {0};
     PolicyAuthValue_In policyAuthValueIn;
+#ifdef NO_WINDOWS
+    ContextSave_In contextSaveIn = { 0 };
+    ContextSave_Out contextSaveOut = { 0 };
+    FlushContext_In flushContextIn = { 0 };
+    FlushContext_Out flushContextOut = { 0 };
+#endif
 
-    // Create the session
-    sessionTable[0].handle = TPM_RS_PW;
+    // Initialize the key
+    g_KeyObject.obj.handle = TPM_RH_NULL;
 
-    // Create the key
-    INITIALIZE_CALL_BUFFERS(TPM2_Create, &createIn, &createOut);
-    parms.objectTableIn[TPM2_Create_HdlIn_ParentHandle] = g_SrkObject;
-    createIn.inSensitive.t.sensitive.userAuth.t.size = sizeof(g_UsageAuth);
-    MemoryCopy(createIn.inSensitive.t.sensitive.userAuth.t.buffer, g_UsageAuth, createIn.inSensitive.t.sensitive.userAuth.t.size, sizeof(createIn.inSensitive.t.sensitive.userAuth.t.buffer));
-    MemoryRemoveTrailingZeros(&createIn.inSensitive.t.sensitive.userAuth);
+    // Do we have a cached KEY already?
+    if (ReadFromFile(L"CachedKEY.bin", pbCmd, sizeof(pbCmd), &cbCmd))
+    {
+        buffer = pbCmd;
+        size = cbCmd;
+        if ((TPM2B_PUBLIC_Unmarshal(&g_KeyObject.obj.publicArea, &buffer, &size, TRUE) == TPM_RC_SUCCESS) &&
+            (TPM2B_PRIVATE_Unmarshal(&g_KeyObject.obj.privateArea, &buffer, &size) == TPM_RC_SUCCESS) &&
+            (TPM2B_AUTH_Unmarshal(&g_KeyObject.obj.authValue, &buffer, &size) == TPM_RC_SUCCESS) &&
+            (TPM2B_CREATION_DATA_Unmarshal(&g_KeyCreationData, &buffer, &size) == TPM_RC_SUCCESS) &&
+            (TPM2B_DIGEST_Unmarshal(&g_KeyCreationHash, &buffer, &size) == TPM_RC_SUCCESS) &&
+            (TPMT_TK_CREATION_Unmarshal(&g_KeyCreationTicket, &buffer, &size) == TPM_RC_SUCCESS))
+        {
+            // Create the session
+            sessionTable[0].handle = TPM_RS_PW;
 
-    // Calculate the admin policy: ((ObjectChangeAuth with usageAuth) || (Duplication with usageAuth))
-    policyORIn.pHashList.count = 3;
+            // Try to load the key
+            INITIALIZE_CALL_BUFFERS(TPM2_Load, &loadIn, &loadOut);
+            parms.objectTableIn[TPM2_Load_HdlIn_ParentHandle] = g_SrkObject;
+            parms.objectTableOut[TPM2_Load_HdlOut_ObjectHandle] = g_KeyObject; // Copy the key in to be updated
+            loadIn.inPublic = g_KeyObject.obj.publicArea;
+            loadIn.inPrivate = g_KeyObject.obj.privateArea;
+            TRY_TPM_CALL(FALSE, TPM2_Load);
+            if (result == TPM_RC_SUCCESS)
+            {
+                // Copy the updated key back out
+                g_KeyObject = parms.objectTableOut[TPM2_Load_HdlOut_ObjectHandle];
+            }
+            else
+            {
+                DeleteFileW(L"CachedKEY.bin");
+                memset(&g_KeyObject, 0x00, sizeof(g_KeyObject));
+                g_KeyObject.obj.handle = TPM_RH_NULL;
+            }
+        }
+    }
 
-    policyORIn.pHashList.digests[0].b.size = SHA256_DIGEST_SIZE;
-    policyCommandCodeIn.code = TPM_CC_ObjectChangeAuth;
-    TPM2_PolicyCommandCode_CalculateUpdate(TPM_ALG_SHA256, &policyORIn.pHashList.digests[0], &policyCommandCodeIn);
-    // c1 b5 0b c8 a2 d5 aa 27 b6 2d c9 c0 d7 76 86 4f 2e fd 67 61 3e 01 43 e5 75 3e 8d e5 bd 2d 70 85
-    TPM2_PolicyAuthValue_CalculateUpdate(TPM_ALG_SHA256, &policyORIn.pHashList.digests[0], &policyAuthValueIn);
-    // e5 29 f5 d6 11 28 72 95 4e 8e d6 60 51 17 b7 57 e2 37 c6 e1 95 13 a9 49 fe e1 f2 04 c4 58 02 3a
+    if (g_KeyObject.obj.handle == TPM_RH_NULL)
+    {
+        // Create the session
+        sessionTable[0].handle = TPM_RS_PW;
 
-    policyORIn.pHashList.digests[1].b.size = SHA256_DIGEST_SIZE;
-    policyCommandCodeIn.code = TPM_CC_Duplicate;
-    TPM2_PolicyCommandCode_CalculateUpdate(TPM_ALG_SHA256, &policyORIn.pHashList.digests[1], &policyCommandCodeIn);
-    // be f5 6b 8c 1c c8 4e 11 ed d7 17 52 8d 2c d9 93 56 bd 2b bf 8f 01 52 09 c3 f8 4a ee ab a8 e8 a2
-    TPM2_PolicyAuthValue_CalculateUpdate(TPM_ALG_SHA256, &policyORIn.pHashList.digests[1], &policyAuthValueIn);
-    // 7d 49 01 0b 81 2b 21 79 b3 7a a6 7a 45 7a 7a e4 f5 0f ec c6 cc 1a 56 98 67 71 76 12 b9 02 86 c8
+        // Create the key
+        INITIALIZE_CALL_BUFFERS(TPM2_Create, &createIn, &createOut);
+        parms.objectTableIn[TPM2_Create_HdlIn_ParentHandle] = g_SrkObject;
+        createIn.inSensitive.t.sensitive.userAuth.t.size = sizeof(g_UsageAuth);
+        MemoryCopy(createIn.inSensitive.t.sensitive.userAuth.t.buffer, g_UsageAuth, createIn.inSensitive.t.sensitive.userAuth.t.size, sizeof(createIn.inSensitive.t.sensitive.userAuth.t.buffer));
+        MemoryRemoveTrailingZeros(&createIn.inSensitive.t.sensitive.userAuth);
 
-    policyORIn.pHashList.digests[2].b.size = SHA256_DIGEST_SIZE;
-    policyCommandCodeIn.code = TPM_CC_Certify;
-    TPM2_PolicyCommandCode_CalculateUpdate(TPM_ALG_SHA256, &policyORIn.pHashList.digests[2], &policyCommandCodeIn);
-    // 04 8e 9a 3a ce 08 58 3f 79 f3 44 ff 78 5b be a9 f0 7a c7 fa 33 25 b3 d4 9a 21 dd 51 94 c6 58 50
-    TPM2_PolicyAuthValue_CalculateUpdate(TPM_ALG_SHA256, &policyORIn.pHashList.digests[2], &policyAuthValueIn);
-    // af 2c a5 69 69 9c 43 6a 21 00 6f 1c b8 a2 75 6c 98 bc 1c 76 5a 35 59 c5 fe 1c 3f 5e 72 28 a7 e7
+        // Calculate the admin policy: ((ObjectChangeAuth with usageAuth) || (Duplication with usageAuth))
+        policyORIn.pHashList.count = 3;
 
-    g_AdminPolicyHashList = policyORIn.pHashList; // Remember that so we dont have to calculate the entire graph every time
-    createIn.inPublic.t.publicArea.authPolicy.t.size = SHA256_DIGEST_SIZE;
-    TPM2_PolicyOR_CalculateUpdate(TPM_ALG_SHA256, &createIn.inPublic.t.publicArea.authPolicy, &policyORIn);
-    // 37 d7 29 9b a7 11 d4 2d 58 d5 d8 84 17 51 a7 9a 28 e7 30 bc ea 9f 4f 72 5d 4c 1e 48 28 88 01 3c
+        policyORIn.pHashList.digests[0].b.size = SHA256_DIGEST_SIZE;
+        policyCommandCodeIn.code = TPM_CC_ObjectChangeAuth;
+        TPM2_PolicyCommandCode_CalculateUpdate(TPM_ALG_SHA256, &policyORIn.pHashList.digests[0], &policyCommandCodeIn);
+        // c1 b5 0b c8 a2 d5 aa 27 b6 2d c9 c0 d7 76 86 4f 2e fd 67 61 3e 01 43 e5 75 3e 8d e5 bd 2d 70 85
+        TPM2_PolicyAuthValue_CalculateUpdate(TPM_ALG_SHA256, &policyORIn.pHashList.digests[0], &policyAuthValueIn);
+        // e5 29 f5 d6 11 28 72 95 4e 8e d6 60 51 17 b7 57 e2 37 c6 e1 95 13 a9 49 fe e1 f2 04 c4 58 02 3a
 
-    createIn.inPublic.t.publicArea.type = TPM_ALG_RSA;
-    createIn.inPublic.t.publicArea.nameAlg = TPM_ALG_SHA256;
-//    createIn.inPublic.t.publicArea.objectAttributes.fixedTPM = 1;
-//    createIn.inPublic.t.publicArea.objectAttributes.fixedParent = 1;
-//    createIn.inPublic.t.publicArea.objectAttributes.encryptedDuplication = 1;
-    createIn.inPublic.t.publicArea.objectAttributes.sensitiveDataOrigin = 1;
-    createIn.inPublic.t.publicArea.objectAttributes.userWithAuth = 1;
-    createIn.inPublic.t.publicArea.objectAttributes.adminWithPolicy = 1;
-    createIn.inPublic.t.publicArea.objectAttributes.noDA = 1;
-    createIn.inPublic.t.publicArea.objectAttributes.decrypt = 1;
-    createIn.inPublic.t.publicArea.objectAttributes.sign = 1;
-    createIn.inPublic.t.publicArea.parameters.symDetail.algorithm = TPM_ALG_NULL;
-    createIn.inPublic.t.publicArea.parameters.rsaDetail.scheme.scheme = TPM_ALG_NULL;
-    createIn.inPublic.t.publicArea.parameters.rsaDetail.keyBits = 2048;
-    createIn.inPublic.t.publicArea.unique.rsa.b.size = 256;
-    createIn.outsideInfo.t.size = sizeof(g_KeyCreationNonce);
-    MemoryCopy(createIn.outsideInfo.t.buffer, g_KeyCreationNonce, sizeof(g_KeyCreationNonce), sizeof(createIn.outsideInfo.t.buffer));
-    EXECUTE_TPM_CALL(FALSE, TPM2_Create);
+        policyORIn.pHashList.digests[1].b.size = SHA256_DIGEST_SIZE;
+        policyCommandCodeIn.code = TPM_CC_Duplicate;
+        TPM2_PolicyCommandCode_CalculateUpdate(TPM_ALG_SHA256, &policyORIn.pHashList.digests[1], &policyCommandCodeIn);
+        // be f5 6b 8c 1c c8 4e 11 ed d7 17 52 8d 2c d9 93 56 bd 2b bf 8f 01 52 09 c3 f8 4a ee ab a8 e8 a2
+        TPM2_PolicyAuthValue_CalculateUpdate(TPM_ALG_SHA256, &policyORIn.pHashList.digests[1], &policyAuthValueIn);
+        // 7d 49 01 0b 81 2b 21 79 b3 7a a6 7a 45 7a 7a e4 f5 0f ec c6 cc 1a 56 98 67 71 76 12 b9 02 86 c8
 
-    // Build the key object
-    g_KeyObject.obj.publicArea = createOut.outPublic;
-    g_KeyObject.obj.privateArea = createOut.outPrivate;
-    g_KeyObject.obj.authValue = createIn.inSensitive.t.sensitive.userAuth;
-    g_KeyCreationData = createOut.creationData;
-    g_KeyCreationHash = createOut.creationHash;
-    g_KeyCreationTicket = createOut.creationTicket;
+        policyORIn.pHashList.digests[2].b.size = SHA256_DIGEST_SIZE;
+        policyCommandCodeIn.code = TPM_CC_Certify;
+        TPM2_PolicyCommandCode_CalculateUpdate(TPM_ALG_SHA256, &policyORIn.pHashList.digests[2], &policyCommandCodeIn);
+        // 04 8e 9a 3a ce 08 58 3f 79 f3 44 ff 78 5b be a9 f0 7a c7 fa 33 25 b3 d4 9a 21 dd 51 94 c6 58 50
+        TPM2_PolicyAuthValue_CalculateUpdate(TPM_ALG_SHA256, &policyORIn.pHashList.digests[2], &policyAuthValueIn);
+        // af 2c a5 69 69 9c 43 6a 21 00 6f 1c b8 a2 75 6c 98 bc 1c 76 5a 35 59 c5 fe 1c 3f 5e 72 28 a7 e7
 
-    // Load the key
-    INITIALIZE_CALL_BUFFERS(TPM2_Load, &loadIn, &loadOut);
-    parms.objectTableIn[TPM2_Load_HdlIn_ParentHandle] = g_SrkObject;
-    parms.objectTableOut[TPM2_Load_HdlOut_ObjectHandle] = g_KeyObject; // Copy the key in to be updated
-    loadIn.inPublic = g_KeyObject.obj.publicArea;
-    loadIn.inPrivate = g_KeyObject.obj.privateArea;
-    EXECUTE_TPM_CALL(FALSE, TPM2_Load);
+        g_AdminPolicyHashList = policyORIn.pHashList; // Remember that so we dont have to calculate the entire graph every time
+        createIn.inPublic.t.publicArea.authPolicy.t.size = SHA256_DIGEST_SIZE;
+        TPM2_PolicyOR_CalculateUpdate(TPM_ALG_SHA256, &createIn.inPublic.t.publicArea.authPolicy, &policyORIn);
+        // 37 d7 29 9b a7 11 d4 2d 58 d5 d8 84 17 51 a7 9a 28 e7 30 bc ea 9f 4f 72 5d 4c 1e 48 28 88 01 3c
 
-    // Copy the updated key back out
-    g_KeyObject = parms.objectTableOut[TPM2_Load_HdlOut_ObjectHandle];
+        createIn.inPublic.t.publicArea.type = TPM_ALG_RSA;
+        createIn.inPublic.t.publicArea.nameAlg = TPM_ALG_SHA256;
+        //    createIn.inPublic.t.publicArea.objectAttributes.fixedTPM = 1;
+        //    createIn.inPublic.t.publicArea.objectAttributes.fixedParent = 1;
+        //    createIn.inPublic.t.publicArea.objectAttributes.encryptedDuplication = 1;
+        createIn.inPublic.t.publicArea.objectAttributes.sensitiveDataOrigin = 1;
+        createIn.inPublic.t.publicArea.objectAttributes.userWithAuth = 1;
+        createIn.inPublic.t.publicArea.objectAttributes.adminWithPolicy = 1;
+        createIn.inPublic.t.publicArea.objectAttributes.noDA = 1;
+        createIn.inPublic.t.publicArea.objectAttributes.decrypt = 1;
+        createIn.inPublic.t.publicArea.objectAttributes.sign = 1;
+        createIn.inPublic.t.publicArea.parameters.symDetail.algorithm = TPM_ALG_NULL;
+        createIn.inPublic.t.publicArea.parameters.rsaDetail.scheme.scheme = TPM_ALG_NULL;
+        createIn.inPublic.t.publicArea.parameters.rsaDetail.keyBits = 2048;
+        createIn.inPublic.t.publicArea.unique.rsa.b.size = 256;
+        createIn.outsideInfo.t.size = sizeof(g_KeyCreationNonce);
+        MemoryCopy(createIn.outsideInfo.t.buffer, g_KeyCreationNonce, sizeof(g_KeyCreationNonce), sizeof(createIn.outsideInfo.t.buffer));
+        EXECUTE_TPM_CALL(FALSE, TPM2_Create);
+
+        // Build the key object
+        g_KeyObject.obj.publicArea = createOut.outPublic;
+        g_KeyObject.obj.privateArea = createOut.outPrivate;
+        g_KeyObject.obj.authValue = createIn.inSensitive.t.sensitive.userAuth;
+        g_KeyCreationData = createOut.creationData;
+        g_KeyCreationHash = createOut.creationHash;
+        g_KeyCreationTicket = createOut.creationTicket;
+
+        // Load the key
+        INITIALIZE_CALL_BUFFERS(TPM2_Load, &loadIn, &loadOut);
+        parms.objectTableIn[TPM2_Load_HdlIn_ParentHandle] = g_SrkObject;
+        parms.objectTableOut[TPM2_Load_HdlOut_ObjectHandle] = g_KeyObject; // Copy the key in to be updated
+        loadIn.inPublic = g_KeyObject.obj.publicArea;
+        loadIn.inPrivate = g_KeyObject.obj.privateArea;
+        EXECUTE_TPM_CALL(FALSE, TPM2_Load);
+
+        // Copy the updated key back out
+        g_KeyObject = parms.objectTableOut[TPM2_Load_HdlOut_ObjectHandle];
+
+        // Cache the key
+        buffer = pbCmd;
+        size = sizeof(pbCmd);
+        cbCmd = TPM2B_PUBLIC_Marshal(&g_KeyObject.obj.publicArea, &buffer, &size);
+        cbCmd += TPM2B_PRIVATE_Marshal(&g_KeyObject.obj.privateArea, &buffer, &size);
+        cbCmd += TPM2B_AUTH_Marshal(&g_KeyObject.obj.authValue, &buffer, &size);
+        cbCmd += TPM2B_CREATION_DATA_Marshal(&g_KeyCreationData, &buffer, &size);
+        cbCmd += TPM2B_DIGEST_Marshal(&g_KeyCreationHash, &buffer, &size);
+        cbCmd += TPMT_TK_CREATION_Marshal(&g_KeyCreationTicket, &buffer, &size);
+        WriteToFile(L"CachedKEY.bin", pbCmd, cbCmd);
+    }
+
+#ifdef NO_WINDOWS
+    // Save the context and remove it from the TPM
+    INITIALIZE_CALL_BUFFERS(TPM2_ContextSave, &contextSaveIn, &contextSaveOut);
+    parms.objectTableIn[TPM2_ContextSave_HdlIn_SaveHandle] = g_KeyObject;
+    EXECUTE_TPM_CALL(FALSE, TPM2_ContextSave);
+    g_KeyContext = contextSaveOut.context;
+    INITIALIZE_CALL_BUFFERS(TPM2_FlushContext, &flushContextIn, &flushContextOut);
+    parms.objectTableIn[TPM2_FlushContext_HdlIn_FlushHandle] = g_KeyObject;
+    EXECUTE_TPM_CALL(FALSE, TPM2_FlushContext);
+    g_KeyObject.obj.handle = TPM_RH_NULL;
+#endif
 
     // Get the BCrypt Handle for the pubKey
     if((result = ImportPubKey(&g_hKey, &g_KeyObject)) != 0)
@@ -929,6 +598,48 @@ Cleanup:
     return result;
 }
 
+UINT32 LoadKeyContext(ANY_OBJECT* keyObject, TPMS_CONTEXT* context)
+{
+    UINT32 result = TPM_RC_SUCCESS;
+#ifdef NO_WINDOWS
+    if (keyObject->obj.handle == TPM_RH_NULL)
+    {
+        DEFINE_CALL_BUFFERS;
+        ContextLoad_In contextLoadIn = { 0 };
+        ContextLoad_Out contextLoadOut = { 0 };
+
+        INITIALIZE_CALL_BUFFERS(TPM2_ContextLoad, &contextLoadIn, &contextLoadOut);
+        contextLoadIn.context = *context;
+        EXECUTE_TPM_CALL(FALSE, TPM2_ContextLoad);
+        keyObject->obj.handle = parms.objectTableOut[TPM2_ContextLoad_HdlOut_LoadedHandle].obj.handle;
+    }
+
+Cleanup:
+#endif
+    return result;
+}
+
+UINT32 UnloadKeyContext(ANY_OBJECT* keyObject)
+{
+    UINT32 result = TPM_RC_SUCCESS;
+#ifdef NO_WINDOWS
+    if (keyObject->obj.handle != TPM_RH_NULL)
+    {
+        DEFINE_CALL_BUFFERS;
+        FlushContext_In flushContextIn = { 0 };
+        FlushContext_Out flushContextOut = { 0 };
+
+        INITIALIZE_CALL_BUFFERS(TPM2_FlushContext, &flushContextIn, &flushContextOut);
+        parms.objectTableIn[TPM2_FlushContext_HdlIn_FlushHandle] = *keyObject;
+        EXECUTE_TPM_CALL(FALSE, TPM2_FlushContext);
+        keyObject->obj.handle = TPM_RH_NULL;
+    }
+
+Cleanup:
+#endif
+    return result;
+}
+
 UINT32
 UnloadKeyObjects()
 {
@@ -937,36 +648,41 @@ UnloadKeyObjects()
     FlushContext_In flushContextIn;
     FlushContext_Out flushContextOut;
 
-    // Unload the key
-    INITIALIZE_CALL_BUFFERS(TPM2_FlushContext, &flushContextIn, &flushContextOut);
-    parms.objectTableIn[TPM2_FlushContext_HdlIn_FlushHandle] = g_KeyObject; // Copy the key in to be updated
-    EXECUTE_TPM_CALL(FALSE, TPM2_FlushContext);
+    if (g_KeyObject.obj.handle != TPM_RH_NULL)
+    {
+        // Unload the key
+        INITIALIZE_CALL_BUFFERS(TPM2_FlushContext, &flushContextIn, &flushContextOut);
+        parms.objectTableIn[TPM2_FlushContext_HdlIn_FlushHandle] = g_KeyObject; // Copy the key in to be updated
+        EXECUTE_TPM_CALL(FALSE, TPM2_FlushContext);
 
-    // Copy the updated key back out
-    g_KeyObject = parms.objectTableIn[TPM2_FlushContext_HdlIn_FlushHandle];
+        // Copy the updated key back out
+        g_KeyObject = parms.objectTableIn[TPM2_FlushContext_HdlIn_FlushHandle];
+        g_KeyObject.obj.handle = TPM_RH_NULL;
+    }
 
-    // Destroy the BCrypt key
-    BCryptDestroyHash(g_hKey);
+    if (g_hKey != NULL)
+    {
+        // Destroy the BCrypt key
+        BCryptDestroyHash(g_hKey);
+    }
 
-    // Unload the AIK
-    INITIALIZE_CALL_BUFFERS(TPM2_FlushContext, &flushContextIn, &flushContextOut);
-    parms.objectTableIn[TPM2_FlushContext_HdlIn_FlushHandle] = g_AikObject; // Copy the key in to be updated
-    EXECUTE_TPM_CALL(FALSE, TPM2_FlushContext);
+    if (g_AikObject.obj.handle != TPM_RH_NULL)
+    {
+        // Unload the AIK
+        INITIALIZE_CALL_BUFFERS(TPM2_FlushContext, &flushContextIn, &flushContextOut);
+        parms.objectTableIn[TPM2_FlushContext_HdlIn_FlushHandle] = g_AikObject; // Copy the key in to be updated
+        EXECUTE_TPM_CALL(FALSE, TPM2_FlushContext);
 
-    // Copy the updated key back out
-    g_AikObject = parms.objectTableIn[TPM2_FlushContext_HdlIn_FlushHandle];
+        // Copy the updated key back out
+        g_AikObject = parms.objectTableIn[TPM2_FlushContext_HdlIn_FlushHandle];
+        g_AikObject.obj.handle = TPM_RH_NULL;
+    }
 
-    // Destroy the BCrypt key
-    BCryptDestroyHash(g_hAik);
-
-    // Unload the EK
-    INITIALIZE_CALL_BUFFERS(TPM2_FlushContext, &flushContextIn, &flushContextOut);
-    parms.objectTableIn[TPM2_FlushContext_HdlIn_FlushHandle] = g_EkObject; // Copy the key in to be updated
-    EXECUTE_TPM_CALL(TRUE, TPM2_FlushContext);
-
-    // Copy the updated key back out
-    g_EkObject = parms.objectTableIn[TPM2_FlushContext_HdlIn_FlushHandle];
-
+    if (g_hAik != NULL)
+    {
+        // Destroy the BCrypt key
+        BCryptDestroyHash(g_hAik);
+    }
 
 Cleanup:
     return result;
@@ -1328,7 +1044,19 @@ TestSignParameterEncryption()
     StartAuthSession_Out startAuthSessionOut = {0};
     Sign_In signIn = {0};
     Sign_Out signOut = {0};
-    BCRYPT_PSS_PADDING_INFO padding = {BCRYPT_SHA256_ALGORITHM, (256 - 32 - 2)};
+    VerifySignature_In verifySigIn = { 0 };
+    VerifySignature_Out verifySigOut = { 0 };
+    TPMT_SIGNATURE sig = { 0 };
+    TPM2B_DIGEST digest = { 0 };
+
+    // Swap the key in
+    if ((result = LoadKeyContext(&g_KeyObject, &g_KeyContext)) != TPM_RC_SUCCESS)
+    {
+        goto Cleanup;
+    }
+
+    digest.t.size = SHA256_DIGEST_SIZE;
+    MemorySet((TPM2B*)&digest.t.buffer, 0x11, digest.t.size);
 
     // Start session
     INITIALIZE_CALL_BUFFERS(TPM2_StartAuthSession, &startAuthSessionIn, &startAuthSessionOut);
@@ -1352,26 +1080,21 @@ TestSignParameterEncryption()
 
     // Sign digest
     INITIALIZE_CALL_BUFFERS(TPM2_Sign, &signIn, &signOut);
-    parms.objectTableIn[0] = g_KeyObject;
-    signIn.digest.t.size = SHA256_DIGEST_SIZE;
-    MemorySet((TPM2B*)&signIn.digest.t.buffer, 0x11, signIn.digest.t.size);
+    parms.objectTableIn[TPM2_Sign_HdlIn_KeyHandle] = g_KeyObject;
+    signIn.digest = digest;
     signIn.inScheme.scheme = TPM_ALG_RSAPSS;
     signIn.inScheme.details.rsapss.hashAlg = TPM_ALG_SHA256;
     signIn.validation.tag = TPM_ST_HASHCHECK;
     signIn.validation.hierarchy = TPM_RH_NULL;
     EXECUTE_TPM_CALL(FALSE, TPM2_Sign);
+    sig = signOut.signature;
 
     // Verify signature
-    if((result = BCryptVerifySignature(g_hKey,
-                                       &padding,
-                                       signIn.digest.t.buffer,
-                                       signIn.digest.t.size,
-                                       signOut.signature.signature.rsassa.sig.t.buffer,
-                                       signOut.signature.signature.rsassa.sig.t.size,
-                                       BCRYPT_PAD_PSS)) != 0)
-    {
-        goto Cleanup;
-    }
+    INITIALIZE_CALL_BUFFERS(TPM2_VerifySignature, &verifySigIn, &verifySigOut);
+    parms.objectTableIn[TPM2_VerifySignature_HdlIn_KeyHandle] = g_KeyObject;
+    verifySigIn.digest = digest;
+    verifySigIn.signature = sig;
+    EXECUTE_TPM_CALL(FALSE, TPM2_VerifySignature);
 
     // Start session
     INITIALIZE_CALL_BUFFERS(TPM2_StartAuthSession, &startAuthSessionIn, &startAuthSessionOut);
@@ -1396,26 +1119,21 @@ TestSignParameterEncryption()
 
     // Sign digest
     INITIALIZE_CALL_BUFFERS(TPM2_Sign, &signIn, &signOut);
-    parms.objectTableIn[0] = g_KeyObject;
-    signIn.digest.t.size = SHA256_DIGEST_SIZE;
-    MemorySet((TPM2B*)&signIn.digest.t.buffer, 0x11, signIn.digest.t.size);
+    parms.objectTableIn[TPM2_Sign_HdlIn_KeyHandle] = g_KeyObject;
+    signIn.digest = digest;
     signIn.inScheme.scheme = TPM_ALG_RSAPSS;
     signIn.inScheme.details.rsapss.hashAlg = TPM_ALG_SHA256;
     signIn.validation.tag = TPM_ST_HASHCHECK;
     signIn.validation.hierarchy = TPM_RH_NULL;
     EXECUTE_TPM_CALL(FALSE, TPM2_Sign);
+    sig = signOut.signature;
 
     // Verify signature
-    if((result = BCryptVerifySignature(g_hKey,
-                                       &padding,
-                                       signIn.digest.t.buffer,
-                                       signIn.digest.t.size,
-                                       signOut.signature.signature.rsassa.sig.t.buffer,
-                                       signOut.signature.signature.rsassa.sig.t.size,
-                                       BCRYPT_PAD_PSS)) != 0)
-    {
-        goto Cleanup;
-    }
+    INITIALIZE_CALL_BUFFERS(TPM2_VerifySignature, &verifySigIn, &verifySigOut);
+    parms.objectTableIn[TPM2_VerifySignature_HdlIn_KeyHandle] = g_KeyObject;
+    verifySigIn.digest = digest;
+    verifySigIn.signature = sig;
+    EXECUTE_TPM_CALL(FALSE, TPM2_VerifySignature);
 
     //
     // Encrypted parameter with salted session (session key)
@@ -1443,26 +1161,21 @@ TestSignParameterEncryption()
 
     // Sign digest
     INITIALIZE_CALL_BUFFERS(TPM2_Sign, &signIn, &signOut);
-    parms.objectTableIn[0] = g_KeyObject;
-    signIn.digest.t.size = SHA256_DIGEST_SIZE;
-    MemorySet((TPM2B*)&signIn.digest.t.buffer, 0x11, signIn.digest.t.size);
+    parms.objectTableIn[TPM2_Sign_HdlIn_KeyHandle] = g_KeyObject;
+    signIn.digest = digest;
     signIn.inScheme.scheme = TPM_ALG_RSAPSS;
     signIn.inScheme.details.rsapss.hashAlg = TPM_ALG_SHA256;
     signIn.validation.tag = TPM_ST_HASHCHECK;
     signIn.validation.hierarchy = TPM_RH_NULL;
     EXECUTE_TPM_CALL(FALSE, TPM2_Sign);
+    sig = signOut.signature;
 
     // Verify signature
-    if((result = BCryptVerifySignature(g_hKey,
-                                       &padding,
-                                       signIn.digest.t.buffer,
-                                       signIn.digest.t.size,
-                                       signOut.signature.signature.rsassa.sig.t.buffer,
-                                       signOut.signature.signature.rsassa.sig.t.size,
-                                       BCRYPT_PAD_PSS)) != 0)
-    {
-        goto Cleanup;
-    }
+    INITIALIZE_CALL_BUFFERS(TPM2_VerifySignature, &verifySigIn, &verifySigOut);
+    parms.objectTableIn[TPM2_VerifySignature_HdlIn_KeyHandle] = g_KeyObject;
+    verifySigIn.digest = digest;
+    verifySigIn.signature = sig;
+    EXECUTE_TPM_CALL(FALSE, TPM2_VerifySignature);
 
     // Start session
     INITIALIZE_CALL_BUFFERS(TPM2_StartAuthSession, &startAuthSessionIn, &startAuthSessionOut);
@@ -1487,26 +1200,21 @@ TestSignParameterEncryption()
 
     // Sign digest
     INITIALIZE_CALL_BUFFERS(TPM2_Sign, &signIn, &signOut);
-    parms.objectTableIn[0] = g_KeyObject;
-    signIn.digest.t.size = SHA256_DIGEST_SIZE;
-    MemorySet((TPM2B*)&signIn.digest.t.buffer, 0x11, signIn.digest.t.size);
+    parms.objectTableIn[TPM2_Sign_HdlIn_KeyHandle] = g_KeyObject;
+    signIn.digest = digest;
     signIn.inScheme.scheme = TPM_ALG_RSAPSS;
     signIn.inScheme.details.rsapss.hashAlg = TPM_ALG_SHA256;
     signIn.validation.tag = TPM_ST_HASHCHECK;
     signIn.validation.hierarchy = TPM_RH_NULL;
     EXECUTE_TPM_CALL(FALSE, TPM2_Sign);
+    sig = signOut.signature;
 
     // Verify signature
-    if((result = BCryptVerifySignature(g_hKey,
-                                       &padding,
-                                       signIn.digest.t.buffer,
-                                       signIn.digest.t.size,
-                                       signOut.signature.signature.rsassa.sig.t.buffer,
-                                       signOut.signature.signature.rsassa.sig.t.size,
-                                       BCRYPT_PAD_PSS)) != 0)
-    {
-        goto Cleanup;
-    }
+    INITIALIZE_CALL_BUFFERS(TPM2_VerifySignature, &verifySigIn, &verifySigOut);
+    parms.objectTableIn[TPM2_VerifySignature_HdlIn_KeyHandle] = g_KeyObject;
+    verifySigIn.digest = digest;
+    verifySigIn.signature = sig;
+    EXECUTE_TPM_CALL(FALSE, TPM2_VerifySignature);
 
     //
     // Encrypted parameter with extra session
@@ -1551,26 +1259,21 @@ TestSignParameterEncryption()
     // Sign digest
     INITIALIZE_CALL_BUFFERS(TPM2_Sign, &signIn, &signOut);
     sessionCnt += 1; // Extra Session
-    parms.objectTableIn[0] = g_KeyObject;
-    signIn.digest.t.size = SHA256_DIGEST_SIZE;
-    MemorySet((TPM2B*)&signIn.digest.t.buffer, 0x11, signIn.digest.t.size);
+    parms.objectTableIn[TPM2_Sign_HdlIn_KeyHandle] = g_KeyObject;
+    signIn.digest = digest;
     signIn.inScheme.scheme = TPM_ALG_RSAPSS;
     signIn.inScheme.details.rsapss.hashAlg = TPM_ALG_SHA256;
     signIn.validation.tag = TPM_ST_HASHCHECK;
     signIn.validation.hierarchy = TPM_RH_NULL;
     EXECUTE_TPM_CALL(FALSE, TPM2_Sign);
+    sig = signOut.signature;
 
     // Verify signature
-    if((result = BCryptVerifySignature(g_hKey,
-                                       &padding,
-                                       signIn.digest.t.buffer,
-                                       signIn.digest.t.size,
-                                       signOut.signature.signature.rsassa.sig.t.buffer,
-                                       signOut.signature.signature.rsassa.sig.t.size,
-                                       BCRYPT_PAD_PSS)) != 0)
-    {
-        goto Cleanup;
-    }
+    INITIALIZE_CALL_BUFFERS(TPM2_VerifySignature, &verifySigIn, &verifySigOut);
+    parms.objectTableIn[TPM2_VerifySignature_HdlIn_KeyHandle] = g_KeyObject;
+    verifySigIn.digest = digest;
+    verifySigIn.signature = sig;
+    EXECUTE_TPM_CALL(FALSE, TPM2_VerifySignature);
 
     // Start key session
     INITIALIZE_CALL_BUFFERS(TPM2_StartAuthSession, &startAuthSessionIn, &startAuthSessionOut);
@@ -1612,23 +1315,24 @@ TestSignParameterEncryption()
     // Sign digest
     INITIALIZE_CALL_BUFFERS(TPM2_Sign, &signIn, &signOut);
     sessionCnt += 1; // Extra Session
-    parms.objectTableIn[0] = g_KeyObject;
-    signIn.digest.t.size = SHA256_DIGEST_SIZE;
-    MemorySet((TPM2B*)&signIn.digest.t.buffer, 0x11, signIn.digest.t.size);
+    parms.objectTableIn[TPM2_Sign_HdlIn_KeyHandle] = g_KeyObject;
+    signIn.digest = digest;
     signIn.inScheme.scheme = TPM_ALG_RSAPSS;
     signIn.inScheme.details.rsapss.hashAlg = TPM_ALG_SHA256;
     signIn.validation.tag = TPM_ST_HASHCHECK;
     signIn.validation.hierarchy = TPM_RH_NULL;
     EXECUTE_TPM_CALL(FALSE, TPM2_Sign);
+    sig = signOut.signature;
 
     // Verify signature
-    if((result = BCryptVerifySignature(g_hKey,
-                                       &padding,
-                                       signIn.digest.t.buffer,
-                                       signIn.digest.t.size,
-                                       signOut.signature.signature.rsassa.sig.t.buffer,
-                                       signOut.signature.signature.rsassa.sig.t.size,
-                                       BCRYPT_PAD_PSS)) != 0)
+    INITIALIZE_CALL_BUFFERS(TPM2_VerifySignature, &verifySigIn, &verifySigOut);
+    parms.objectTableIn[TPM2_VerifySignature_HdlIn_KeyHandle] = g_KeyObject;
+    verifySigIn.digest = digest;
+    verifySigIn.signature = sig;
+    EXECUTE_TPM_CALL(FALSE, TPM2_VerifySignature);
+
+    // Swap the key out
+    if ((result = UnloadKeyContext(&g_KeyObject)) != TPM_RC_SUCCESS)
     {
         goto Cleanup;
     }
@@ -1646,6 +1350,12 @@ TestSignSaltedAndBound()
     StartAuthSession_Out startAuthSessionOut = {0};
     Sign_In signIn = {0};
     Sign_Out signOut = {0};
+
+    // Swap the key in
+    if ((result = LoadKeyContext(&g_KeyObject, &g_KeyContext)) != TPM_RC_SUCCESS)
+    {
+        goto Cleanup;
+    }
 
     // Start SRK session
     INITIALIZE_CALL_BUFFERS(TPM2_StartAuthSession, &startAuthSessionIn, &startAuthSessionOut);
@@ -1701,6 +1411,12 @@ TestSignSaltedAndBound()
     signIn.validation.hierarchy = TPM_RH_NULL;
     EXECUTE_TPM_CALL(FALSE, TPM2_Sign);
 
+    // Swap the key out
+    if ((result = UnloadKeyContext(&g_KeyObject)) != TPM_RC_SUCCESS)
+    {
+        goto Cleanup;
+    }
+
 Cleanup:
     return result;
 }
@@ -1714,6 +1430,12 @@ TestSignSalted()
     StartAuthSession_Out startAuthSessionOut = {0};
     Sign_In signIn = {0};
     Sign_Out signOut = {0};
+
+    // Swap the key in
+    if ((result = LoadKeyContext(&g_KeyObject, &g_KeyContext)) != TPM_RC_SUCCESS)
+    {
+        goto Cleanup;
+    }
 
     // Start SRK session
     INITIALIZE_CALL_BUFFERS(TPM2_StartAuthSession, &startAuthSessionIn, &startAuthSessionOut);
@@ -1742,6 +1464,12 @@ TestSignSalted()
     signIn.validation.hierarchy = TPM_RH_NULL;
     EXECUTE_TPM_CALL(FALSE, TPM2_Sign);
 
+    // Swap the key out
+    if ((result = UnloadKeyContext(&g_KeyObject)) != TPM_RC_SUCCESS)
+    {
+        goto Cleanup;
+    }
+
 Cleanup:
     return result;
 }
@@ -1755,6 +1483,12 @@ TestSignBound()
     StartAuthSession_Out startAuthSessionOut = {0};
     Sign_In signIn = {0};
     Sign_Out signOut = {0};
+
+    // Swap the key in
+    if ((result = LoadKeyContext(&g_KeyObject, &g_KeyContext)) != TPM_RC_SUCCESS)
+    {
+        goto Cleanup;
+    }
 
     // Start SRK session
     INITIALIZE_CALL_BUFFERS(TPM2_StartAuthSession, &startAuthSessionIn, &startAuthSessionOut);
@@ -1810,6 +1544,12 @@ TestSignBound()
     signIn.validation.hierarchy = TPM_RH_NULL;
     EXECUTE_TPM_CALL(FALSE, TPM2_Sign);
 
+    // Swap the key out
+    if ((result = UnloadKeyContext(&g_KeyObject)) != TPM_RC_SUCCESS)
+    {
+        goto Cleanup;
+    }
+
 Cleanup:
     return result;
 }
@@ -1823,6 +1563,12 @@ TestSignHMAC()
     StartAuthSession_Out startAuthSessionOut = { 0 };
     Sign_In signIn = { 0 };
     Sign_Out signOut = { 0 };
+
+    // Swap the key in
+    if ((result = LoadKeyContext(&g_KeyObject, &g_KeyContext)) != TPM_RC_SUCCESS)
+    {
+        goto Cleanup;
+    }
 
     // Start session
     INITIALIZE_CALL_BUFFERS(TPM2_StartAuthSession, &startAuthSessionIn, &startAuthSessionOut);
@@ -1851,6 +1597,12 @@ TestSignHMAC()
     signIn.validation.hierarchy = TPM_RH_NULL;
     EXECUTE_TPM_CALL(FALSE, TPM2_Sign);
 
+    // Swap the key out
+    if ((result = UnloadKeyContext(&g_KeyObject)) != TPM_RC_SUCCESS)
+    {
+        goto Cleanup;
+    }
+
 Cleanup:
     return result;
 }
@@ -1862,6 +1614,12 @@ TestSignWithPW()
     UINT32 result = TPM_RC_SUCCESS;
     Sign_In signIn = {0};
     Sign_Out signOut = {0};
+
+    // Swap the key in
+    if ((result = LoadKeyContext(&g_KeyObject, &g_KeyContext)) != TPM_RC_SUCCESS)
+    {
+        goto Cleanup;
+    }
 
     // Create the session
     sessionTable[0].handle = TPM_RS_PW;
@@ -1876,6 +1634,12 @@ TestSignWithPW()
     signIn.validation.tag = TPM_ST_HASHCHECK;
     signIn.validation.hierarchy = TPM_RH_NULL;
     EXECUTE_TPM_CALL(FALSE, TPM2_Sign);
+
+    // Swap the key out
+    if ((result = UnloadKeyContext(&g_KeyObject)) != TPM_RC_SUCCESS)
+    {
+        goto Cleanup;
+    }
 
 Cleanup:
     return result;
@@ -2550,6 +2314,8 @@ TestRsaKeyImport()
     Sign_Out signOut = {0};
     FlushContext_In flushContextIn;
     FlushContext_Out flushContextOut;
+    VerifySignature_In verifySigIn = { 0 };
+    VerifySignature_Out verifySigOut = { 0 };
 
     BCRYPT_KEY_HANDLE hSwKey = NULL;
     BYTE swKey[1024] = {0};
@@ -2563,6 +2329,11 @@ TestRsaKeyImport()
     TPMT_SYM_DEF_OBJECT symDef = {TPM_ALG_NULL, 0, TPM_ALG_NULL};
     OBJECT newParent = {0};
     TPM2B_ENCRYPTED_SECRET inSymSeed = {0};
+    TPMT_SIGNATURE sig = { 0 };
+    TPM2B_DIGEST digest = { 0 };
+
+    digest.t.size = SHA256_DIGEST_SIZE;
+    MemorySet((TPM2B*)&digest.t.buffer, 0x11, digest.t.size);
 
     // Create SW key
     if(((result = BCryptGenerateKeyPair(hRsaAlg, &hSwKey, 2048, 0)) != ERROR_SUCCESS) ||
@@ -2632,25 +2403,20 @@ TestRsaKeyImport()
     // Sign digest
     INITIALIZE_CALL_BUFFERS(TPM2_Sign, &signIn, &signOut);
     parms.objectTableIn[TPM2_Sign_HdlIn_KeyHandle] = rsaKey;
-    signIn.digest.t.size = SHA256_DIGEST_SIZE;
-    MemorySet((TPM2B*)&signIn.digest.t.buffer, 0x11, signIn.digest.t.size);
+    signIn.digest = digest;
     signIn.inScheme.scheme = TPM_ALG_RSAPSS;
     signIn.inScheme.details.rsapss.hashAlg = TPM_ALG_SHA256;
     signIn.validation.tag = TPM_ST_HASHCHECK;
     signIn.validation.hierarchy = TPM_RH_NULL;
     EXECUTE_TPM_CALL(FALSE, TPM2_Sign);
+    sig = signOut.signature;
 
-    // Verify signature in software
-    if((result = BCryptVerifySignature(hSwKey,
-                                       &padding,
-                                       signIn.digest.t.buffer,
-                                       signIn.digest.t.size,
-                                       signOut.signature.signature.rsapss.sig.t.buffer,
-                                       signOut.signature.signature.rsapss.sig.t.size,
-                                       BCRYPT_PAD_PSS)) != ERROR_SUCCESS)
-    {
-        goto Cleanup;
-    }
+    // Verify signature
+    INITIALIZE_CALL_BUFFERS(TPM2_VerifySignature, &verifySigIn, &verifySigOut);
+    parms.objectTableIn[TPM2_VerifySignature_HdlIn_KeyHandle] = rsaKey;
+    verifySigIn.digest = digest;
+    verifySigIn.signature = sig;
+    EXECUTE_TPM_CALL(FALSE, TPM2_VerifySignature);
 
     // Unload the RSA key
     INITIALIZE_CALL_BUFFERS(TPM2_FlushContext, &flushContextIn, &flushContextOut);
@@ -2705,25 +2471,20 @@ TestRsaKeyImport()
     // Sign digest
     INITIALIZE_CALL_BUFFERS(TPM2_Sign, &signIn, &signOut);
     parms.objectTableIn[TPM2_Sign_HdlIn_KeyHandle] = rsaKey;
-    signIn.digest.t.size = SHA256_DIGEST_SIZE;
-    MemorySet((TPM2B*)&signIn.digest.t.buffer, 0x11, signIn.digest.t.size);
+    signIn.digest = digest;
     signIn.inScheme.scheme = TPM_ALG_RSAPSS;
     signIn.inScheme.details.rsapss.hashAlg = TPM_ALG_SHA256;
     signIn.validation.tag = TPM_ST_HASHCHECK;
     signIn.validation.hierarchy = TPM_RH_NULL;
     EXECUTE_TPM_CALL(FALSE, TPM2_Sign);
+    sig = signOut.signature;
 
-    // Verify signature in software
-    if((result = BCryptVerifySignature(hSwKey,
-                                       &padding,
-                                       signIn.digest.t.buffer,
-                                       signIn.digest.t.size,
-                                       signOut.signature.signature.rsapss.sig.t.buffer,
-                                       signOut.signature.signature.rsapss.sig.t.size,
-                                       BCRYPT_PAD_PSS)) != ERROR_SUCCESS)
-    {
-        goto Cleanup;
-    }
+    // Verify signature
+    INITIALIZE_CALL_BUFFERS(TPM2_VerifySignature, &verifySigIn, &verifySigOut);
+    parms.objectTableIn[TPM2_VerifySignature_HdlIn_KeyHandle] = rsaKey;
+    verifySigIn.digest = digest;
+    verifySigIn.signature = sig;
+    EXECUTE_TPM_CALL(FALSE, TPM2_VerifySignature);
 
     // Unload the RSA key
     INITIALIZE_CALL_BUFFERS(TPM2_FlushContext, &flushContextIn, &flushContextOut);
@@ -2773,6 +2534,12 @@ TestCredentialActivation()
     PolicyRestart_Out policyRestartOut;
     TPM2B_SEED seed = {0};
     OBJECT ekPub = {0};
+
+    // Swap the key in
+    if ((result = LoadKeyContext(&g_AikObject, &g_AikContext)) != TPM_RC_SUCCESS)
+    {
+        goto Cleanup;
+    }
 
     // Make a credential
     credential.t.size = SHA256_DIGEST_SIZE;
@@ -2950,6 +2717,12 @@ TestCredentialActivation()
         result = TPM_RC_FAILURE;
     }
 
+    // Swap the key out
+    if ((result = UnloadKeyContext(&g_AikObject)) != TPM_RC_SUCCESS)
+    {
+        goto Cleanup;
+    }
+
 Cleanup:
     return result;
 }
@@ -2986,6 +2759,12 @@ TestKeyExport()
     TPM2B_SEED seed = {0};
     TPMT_SYM_DEF_OBJECT symDef = {0};
     TPM2B_DATA innerSymKey = {0};
+
+    // Swap the key in
+    if ((result = LoadKeyContext(&g_KeyObject, &g_KeyContext)) != TPM_RC_SUCCESS)
+    {
+        goto Cleanup;
+    }
 
     // Create SW key
     if(((result = BCryptGenerateKeyPair(hRsaAlg, &hSwKey, 2048, 0)) != ERROR_SUCCESS) ||
@@ -3139,6 +2918,12 @@ TestKeyExport()
     INITIALIZE_CALL_BUFFERS(TPM2_FlushContext, &flushContextIn, &flushContextOut);
     parms.objectTableIn[TPM2_FlushContext_HdlIn_FlushHandle] = rsaKey;
     EXECUTE_TPM_CALL(FALSE, TPM2_FlushContext);
+
+    // Swap the key out
+    if ((result = UnloadKeyContext(&g_KeyObject)) != TPM_RC_SUCCESS)
+    {
+        goto Cleanup;
+    }
 
 Cleanup:
     if(hSwKey != NULL)
@@ -3824,6 +3609,12 @@ TestObjectChangeAuth()
     Sign_In signIn = {0};
     Sign_Out signOut = {0};
 
+    // Swap the key in
+    if ((result = LoadKeyContext(&g_KeyObject, &g_KeyContext)) != TPM_RC_SUCCESS)
+    {
+        goto Cleanup;
+    }
+
     // Create the admin policy Session
     INITIALIZE_CALL_BUFFERS(TPM2_StartAuthSession, &startAuthSessionIn, &startAuthSessionOut);
     parms.objectTableIn[TPM2_StartAuthSession_HdlIn_TpmKey].obj.handle = TPM_RH_NULL;
@@ -3892,6 +3683,12 @@ TestObjectChangeAuth()
     signIn.validation.tag = TPM_ST_HASHCHECK;
     signIn.validation.hierarchy = TPM_RH_NULL;
     EXECUTE_TPM_CALL(FALSE, TPM2_Sign);
+
+    // Swap the key out
+    if ((result = UnloadKeyContext(&g_KeyObject)) != TPM_RC_SUCCESS)
+    {
+        goto Cleanup;
+    }
 
 Cleanup:
     return result;
@@ -4004,6 +3801,12 @@ TestDynamicPolicies()
     Unseal_Out unsealOut = {0};
     FlushContext_In flushContextIn;
     FlushContext_Out flushContextOut;
+
+    // Swap the key in
+    if ((result = LoadKeyContext(&g_KeyObject, &g_KeyContext)) != TPM_RC_SUCCESS)
+    {
+        goto Cleanup;
+    }
 
     // Create the session
     sessionTable[0].handle = TPM_RS_PW;
@@ -4139,6 +3942,12 @@ TestDynamicPolicies()
 
     sealedBlob = parms.objectTableIn[TPM2_FlushContext_HdlIn_FlushHandle];
 
+    // Swap the key out
+    if ((result = UnloadKeyContext(&g_KeyObject)) != TPM_RC_SUCCESS)
+    {
+        goto Cleanup;
+    }
+
 Cleanup:
     return result;
 }
@@ -4155,6 +3964,12 @@ TestRSADecrypt()
     RSA_Decrypt_Out rsaDecryptOut = {0};
     BCRYPT_OAEP_PADDING_INFO padding = {BCRYPT_SHA256_ALGORITHM, (PUCHAR)label, sizeof(label)};
     ULONG cbResult = 0;
+
+    // Swap the key in
+    if ((result = LoadKeyContext(&g_KeyObject, &g_KeyContext)) != TPM_RC_SUCCESS)
+    {
+        goto Cleanup;
+    }
 
     // Create the encrypted blob in the TPM
     INITIALIZE_CALL_BUFFERS(TPM2_RSA_Encrypt, &rsaEncryptIn, &rsaEncryptOut);
@@ -4219,6 +4034,12 @@ TestRSADecrypt()
         !MemoryEqual(rsaDecryptOut.message.t.buffer, rsaEncryptIn.message.t.buffer, rsaDecryptOut.message.t.size))
     {
         result = TPM_RC_FAILURE;
+        goto Cleanup;
+    }
+
+    // Swap the key out
+    if ((result = UnloadKeyContext(&g_KeyObject)) != TPM_RC_SUCCESS)
+    {
         goto Cleanup;
     }
 
@@ -4358,6 +4179,16 @@ TestKeyAttestation()
     PolicyOR_In policyORIn = {0};
     PolicyOR_Out policyOROut;
 
+    // Swap the key in
+    if ((result = LoadKeyContext(&g_AikObject, &g_AikContext)) != TPM_RC_SUCCESS)
+    {
+        goto Cleanup;
+    }
+    if ((result = LoadKeyContext(&g_KeyObject, &g_KeyContext)) != TPM_RC_SUCCESS)
+    {
+        goto Cleanup;
+    }
+
     // Create the session
     sessionTable[0].handle = TPM_RS_PW;
 
@@ -4464,6 +4295,16 @@ TestKeyAttestation()
         goto Cleanup;
     }
 
+    // Swap the key out
+    if ((result = UnloadKeyContext(&g_KeyObject)) != TPM_RC_SUCCESS)
+    {
+        goto Cleanup;
+    }
+    if ((result = UnloadKeyContext(&g_AikObject)) != TPM_RC_SUCCESS)
+    {
+        goto Cleanup;
+    }
+
 Cleanup:
     return result;
 }
@@ -4482,6 +4323,12 @@ TestPlatformAttestation()
     Quote_Out quoteOut = { 0 };
     GetTime_In getTimeIn = { 0 };
     GetTime_Out getTimeOut = { 0 };
+
+    // Swap the key in
+    if ((result = LoadKeyContext(&g_AikObject, &g_AikContext)) != TPM_RC_SUCCESS)
+    {
+        goto Cleanup;
+    }
 
     // Create the session
     sessionTable[0].handle = TPM_RS_PW;
@@ -4563,6 +4410,12 @@ TestPlatformAttestation()
         goto Cleanup;
     }
 
+    // Swap the key out
+    if ((result = UnloadKeyContext(&g_AikObject)) != TPM_RC_SUCCESS)
+    {
+        goto Cleanup;
+    }
+
 Cleanup:
     return result;
 }
@@ -4598,7 +4451,7 @@ int __cdecl wmain(int argc, WCHAR* argv[])
     _cpri__SymStartup();
 
 #ifdef USE_VCOM_TPM
-    TPMStartup();
+    TPMVComStartup();
 #endif
 
     wprintf(L"---NOTE-----------------------------------------\n");
@@ -4714,7 +4567,7 @@ int __cdecl wmain(int argc, WCHAR* argv[])
     if(result) wprintf(L"(0x%08x)\n", result); else wprintf(L"PASS........\n");
 Cleanup:
 #ifdef USE_VCOM_TPM
-    TPMShutdown();
+    TPMVComShutdown();
 #endif
     return result;
 }

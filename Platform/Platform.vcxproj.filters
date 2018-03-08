@@ -5,6 +5,7 @@
     <ClCompile Include="Windows.c" />
     <ClCompile Include="BCrypt.c" />
     <ClCompile Include="WolfCrypt.c" />
+    <ClCompile Include="VCom.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\Inc\UrchinPlatform.h" />

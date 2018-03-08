@@ -10,6 +10,7 @@
 #endif
 
 #include <stdint.h>
+#include <malloc.h>
 #include <windows.h>
 #include <bcrypt.h>
 #include <tbs.h>
