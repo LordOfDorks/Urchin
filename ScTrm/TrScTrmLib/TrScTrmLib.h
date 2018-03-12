@@ -104,4 +104,7 @@ typedef struct
 } ScTrmStateObject_t;
 #pragma pack(pop)
 
-__declspec(dllexport) ScTrmResult_t ScTrmGetConfirmation(ScTrmStateObject_t* state);
+#ifndef USE_OPTEE
+__declspec(dllexport) 
+#endif
+ScTrmResult_t ScTrmGetConfirmation(ScTrmStateObject_t* state);

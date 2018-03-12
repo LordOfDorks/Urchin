@@ -37,6 +37,10 @@ typedef uint64_t                 UINT64;
 typedef int64_t                  INT64;
 typedef void                     *PVOID;
 
+#if !defined(__in_ecount)
+#define __in_ecount(size)
+#endif
+
 #if defined(TRUE)
 #undef TRUE
 #endif
@@ -8755,7 +8759,7 @@ BYTE **buffer,
 INT32 *size
 );
 
-#endif _GETCAPABILITY_H
+#endif /* _GETCAPABILITY_H */
 
 #ifndef _GETCOMMANDAUDITDIGEST_H
 #define _GETCOMMANDAUDITDIGEST_H
@@ -11068,7 +11072,7 @@ TPM2B_DIGEST *policyDigest,
 PolicyDuplicationSelect_In *policyCommandCodeIn
 );
 
-#endif _POLICYDUPLICATIONSELECT_H
+#endif /* _POLICYDUPLICATIONSELECT_H */
 
 #ifndef _POLICYGETDIGEST_H
 #define _POLICYGETDIGEST_H
@@ -11410,7 +11414,7 @@ TPM2B_DIGEST *policyDigest,
 PolicyPassword_In *policyPassword_In
 );
 
-#endif _POLICYPASSWORD_H
+#endif /* _POLICYPASSWORD_H */
 
 #ifndef _POLICYPCR_H
 #define _POLICYPCR_H
@@ -11754,7 +11758,7 @@ PolicySigned_In *policySigned_In,
 TPM2B_NAME *authObjectName
 );
 
-#endif _POLICYSIGNED_H
+#endif /* _POLICYSIGNED_H */
 
 #ifndef _POLICYTICKET_H
 #define _POLICYTICKET_H
@@ -12178,7 +12182,7 @@ BYTE **buffer,
 INT32 *size
 );
 
-#endif _RSA_ENCRYPT_H
+#endif /* _RSA_ENCRYPT_H */
 
 #ifndef _SELFTEST_H
 #define _SELFTEST_H
@@ -12380,7 +12384,7 @@ BYTE **buffer,
 INT32 *size
 );
 
-#endif _SETALGORITHMSET_H
+#endif /* _SETALGORITHMSET_H */
 
 #ifndef _SETCOMMANDCODEAUDITSTATUS_H
 #define _SETCOMMANDCODEAUDITSTATUS_H
@@ -12977,7 +12981,7 @@ INT32 *size
 	UINT32 sessionCnt = 0; \
 
 #define INITIALIZE_CALL_BUFFERS(__CommandType, __InParm, __OutParm) \
-	sessionCnt = ##__CommandType##_SessionCnt; \
+	sessionCnt = __CommandType##_SessionCnt; \
 	buffer = pbCmd; \
 	size = sizeof(pbCmd); \
 	MemorySet(&parms, 0x00, sizeof(parms)); \
@@ -12985,29 +12989,29 @@ INT32 *size
 	MemorySet(__OutParm, 0x00, sizeof(*__OutParm)); \
 	parms.parmIn = (void*)__InParm; \
 	parms.parmOut = (void*)__OutParm; \
-	parms.objectCntIn = ##__CommandType##_HdlCntIn; \
-	parms.objectCntOut = ##__CommandType##_HdlCntOut; \
+	parms.objectCntIn = __CommandType##_HdlCntIn; \
+	parms.objectCntOut = __CommandType##_HdlCntOut; \
 
 #define EXECUTE_TPM_CALL(__CloseContext, __CommandType) \
-	cbCmd = ##__CommandType##_Marshal(sessionTable, sessionCnt, &parms, &buffer, &size); \
+	cbCmd = __CommandType##_Marshal(sessionTable, sessionCnt, &parms, &buffer, &size); \
 	if ((result = PlatformSubmitTPM20Command(__CloseContext, pbCmd, cbCmd, pbRsp, sizeof(pbRsp), &cbRsp)) != TPM_RC_SUCCESS) \
 	{ \
 		goto Cleanup; \
 	} \
 	buffer = pbRsp; \
 	size = cbRsp; \
-	if ((result = ##__CommandType##_Unmarshal(sessionTable, sessionCnt, &parms, &buffer, &size)) != TPM_RC_SUCCESS) \
+	if ((result = __CommandType##_Unmarshal(sessionTable, sessionCnt, &parms, &buffer, &size)) != TPM_RC_SUCCESS) \
 	{ \
 		goto Cleanup; \
 	} \
 
 #define TRY_TPM_CALL(__CloseContext, __CommandType) \
-	cbCmd = ##__CommandType##_Marshal(sessionTable, sessionCnt, &parms, &buffer, &size); \
+	cbCmd = __CommandType##_Marshal(sessionTable, sessionCnt, &parms, &buffer, &size); \
 	if ((result = PlatformSubmitTPM20Command(__CloseContext, pbCmd, cbCmd, pbRsp, sizeof(pbRsp), &cbRsp)) == TPM_RC_SUCCESS) \
 	{ \
 		buffer = pbRsp; \
 		size = cbRsp; \
-		result = ##__CommandType##_Unmarshal(sessionTable, sessionCnt, &parms, &buffer, &size); \
+		result = __CommandType##_Unmarshal(sessionTable, sessionCnt, &parms, &buffer, &size); \
 	} \
 
 // Windows defined constants

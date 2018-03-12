@@ -11,9 +11,11 @@
 
 #include <stdint.h>
 #include <malloc.h>
+#ifndef NO_WINDOWS
 #include <windows.h>
 #include <bcrypt.h>
 #include <tbs.h>
 #include <Wincrypt.h>
+#endif
 #include "UrchinLib.h"
 #include "UrchinPlatform.h"

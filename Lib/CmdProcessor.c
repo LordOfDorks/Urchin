@@ -1217,11 +1217,13 @@ TPM2B_NAME *name        // OUT: name of entity
         *name = object->generic.name;
         break;
     default:
+	{
         // For all other types, the handle is the Name
         BYTE *buffer = name->t.name;
         INT32 size = sizeof(name->t.name);
         name->t.size = TPM_HANDLE_Marshal(&object->generic.handle, &buffer, &size);
         break;
+	}
     }
     return name->t.size;
 }
