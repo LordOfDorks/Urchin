@@ -197,7 +197,7 @@ CreateSrkObject()
 
         INITIALIZE_CALL_BUFFERS(TPM2_FlushContext, &flushContextIn, &flushContextOut);
         parms.objectTableIn[TPM2_FlushContext_HdlIn_FlushHandle].generic.handle = srkHandle;
-        EXECUTE_TPM_CALL(FALSE, TPM2_FlushContext);
+        TRY_TPM_CALL(FALSE, TPM2_FlushContext);
 
         INITIALIZE_CALL_BUFFERS(TPM2_ReadPublic, &readPublicIn, &readPublicOut);
         parms.objectTableIn[TPM2_ReadPublic_HdlIn_PublicKey].generic.handle = TPM_20_SRK_HANDLE;
@@ -256,7 +256,7 @@ CreateEkObject()
 
         INITIALIZE_CALL_BUFFERS(TPM2_FlushContext, &flushContextIn, &flushContextOut);
         parms.objectTableIn[TPM2_FlushContext_HdlIn_FlushHandle].generic.handle = ekHandle;
-        EXECUTE_TPM_CALL(FALSE, TPM2_FlushContext);
+        TRY_TPM_CALL(FALSE, TPM2_FlushContext);
 
         INITIALIZE_CALL_BUFFERS(TPM2_ReadPublic, &readPublicIn, &readPublicOut);
         parms.objectTableIn[TPM2_ReadPublic_HdlIn_PublicKey].generic.handle = TPM_20_EK_HANDLE;
