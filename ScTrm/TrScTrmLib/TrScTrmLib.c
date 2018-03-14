@@ -16,7 +16,7 @@ ScTrmFunc_MyBreakPointHere(void)
 
 #undef INITIALIZE_CALL_BUFFERS
 #define INITIALIZE_CALL_BUFFERS(__CommandType, __InParm, __OutParm) \
-    state->intern.urchin.sessionCnt = ##__CommandType##_SessionCnt; \
+    state->intern.urchin.sessionCnt = __CommandType##_SessionCnt; \
     buffer = state->param.pbCmd; \
     size = sizeof(state->param.pbCmd); \
     MemorySet(&state->intern.urchin.parms, 0x00, sizeof(state->intern.urchin.parms)); \
@@ -24,21 +24,21 @@ ScTrmFunc_MyBreakPointHere(void)
     MemorySet(__OutParm, 0x00, sizeof(*__OutParm)); \
     state->intern.urchin.parms.parmIn = (void*)__InParm; \
     state->intern.urchin.parms.parmOut = (void*)__OutParm; \
-    state->intern.urchin.parms.objectCntIn = ##__CommandType##_HdlCntIn; \
-    state->intern.urchin.parms.objectCntOut = ##__CommandType##_HdlCntOut; \
+    state->intern.urchin.parms.objectCntIn = __CommandType##_HdlCntIn; \
+    state->intern.urchin.parms.objectCntOut = __CommandType##_HdlCntOut; \
 
 #define MARSHAL_CMD(__CommandType) \
-    state->param.cbCmd = ##__CommandType##_Marshal(state->intern.urchin.sessionTable, state->intern.urchin.sessionCnt, &state->intern.urchin.parms, &buffer, &size); \
+    state->param.cbCmd = __CommandType##_Marshal(state->intern.urchin.sessionTable, state->intern.urchin.sessionCnt, &state->intern.urchin.parms, &buffer, &size); \
 
 #define TRY_UNMARSHAL_RSP(__CommandType) \
     buffer = state->param.pbRsp; \
     size = state->param.cbRsp; \
-    result = ##__CommandType##_Unmarshal(state->intern.urchin.sessionTable, state->intern.urchin.sessionCnt, &state->intern.urchin.parms, &buffer, &size) \
+    result = __CommandType##_Unmarshal(state->intern.urchin.sessionTable, state->intern.urchin.sessionCnt, &state->intern.urchin.parms, &buffer, &size) \
 
 #define UNMARSHAL_RSP(__CommandType) \
     buffer = state->param.pbRsp; \
     size = state->param.cbRsp; \
-    if ((result = ##__CommandType##_Unmarshal(state->intern.urchin.sessionTable, state->intern.urchin.sessionCnt, &state->intern.urchin.parms, &buffer, &size)) != TPM_RC_SUCCESS) \
+    if ((result = __CommandType##_Unmarshal(state->intern.urchin.sessionTable, state->intern.urchin.sessionCnt, &state->intern.urchin.parms, &buffer, &size)) != TPM_RC_SUCCESS) \
     { \
         goto Cleanup; \
     } \
@@ -462,12 +462,15 @@ Cleanup:
     return state->intern.result;
 }
 
-__declspec(dllexport) ScTrmResult_t ScTrmGetConfirmation(ScTrmStateObject_t* state)
+#ifndef USE_OPTEE
+__declspec(dllexport) 
+#endif
+ScTrmResult_t ScTrmGetConfirmation(ScTrmStateObject_t* state)
 {
-    _cpri__RngStartup()
-    _cpri__HashStartup()
-    _cpri__RsaStartup()
-    _cpri__SymStartup()
+    _cpri__RngStartup();
+    _cpri__HashStartup();
+    _cpri__RsaStartup();
+    _cpri__SymStartup();
 
     switch(state->intern.state)
     {
