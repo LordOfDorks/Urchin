@@ -227,6 +227,9 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <ProjectReference Include="..\..\Platform\Platform.vcxproj">
+      <Project>{494190cf-79b0-49d9-8dca-bab4cbd5a2e6}</Project>
+    </ProjectReference>
     <ProjectReference Include="..\PuScTrmLib\PuScTrmLib.vcxproj">
       <Project>{2b238403-6599-4054-8980-ea17bff76bd9}</Project>
     </ProjectReference>
