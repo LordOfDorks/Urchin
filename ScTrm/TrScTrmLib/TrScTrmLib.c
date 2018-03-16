@@ -2,6 +2,9 @@
 //
 
 #include "stdafx.h"
+#ifdef USE_SGX
+# define DMSG printf
+#endif
 
 int
 ScTrmFunc_MyBreakPointHere(void)
