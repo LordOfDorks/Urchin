@@ -154,7 +154,7 @@ typedef struct {
 
 // Table 213 -- Implemented Algorithms
 #define    ALG_RSA               YES    // 1
-#define    ALG_SHA1              YES    // 1
+#define    ALG_SHA1              NO    // 1
 #define    ALG_HMAC              YES    // 1
 #define    ALG_AES               YES    // 1
 #define    ALG_MGF1              YES    // 1

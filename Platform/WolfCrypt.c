@@ -27,6 +27,8 @@ THE SOFTWARE IS PROVIDED *AS IS*, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 #include "wolfssl/wolfcrypt/sha.h"
 #include "wolfssl/wolfcrypt/sha256.h"
 #include "wolfssl/wolfcrypt/sha512.h"
+#undef WC_SHA512_DIGEST_SIZE
+#undef MAX_DIGEST_SIZE
 #include "wolfssl/wolfcrypt/hmac.h"
 #include "wolfssl/wolfcrypt/integer.h"
 #include "wolfssl/wolfcrypt/aes.h"
@@ -130,6 +132,9 @@ _cpri__CopyHashState(
     switch (in->hashAlg)
     {
 #ifdef TPM_ALG_SHA1
+    #ifdef NO_SHA
+        #error NO_SHA and TPM_ALG_SHA1 cannot both be specified.
+    #endif
     case TPM_ALG_SHA1:
         if ((out->state.data = malloc(sizeof(wc_Sha))) != NULL)
         {
