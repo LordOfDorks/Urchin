@@ -1,13 +1,14 @@
 #include "stdafx.h"
 #include "Interface.h"
+#include "windows.h"
 
 HANDLE hVCom = INVALID_HANDLE_VALUE;
-LPCTSTR vcomPort = TEXT("COM6");
+LPCTSTR vcomPort = TEXT("COM5");
 unsigned int vcomTimeout = 10 * 60 * 1000;
 
 // Nucleo-L476RC based TPM on USB-VCOM
 #pragma pack(push, 1)
-#define TPM_VCOM_PORT TEXT("COM6")
+#define TPM_VCOM_PORT TEXT("COM3")
 #define SIGNALMAGIC (0x326d7054)
 #define MAX_TPM_COMMAND_SIZE (2048)
 #define TPM_HEADER_SIZE (10)
@@ -202,7 +203,7 @@ UINT32 TPMVComSubmitCommand(
     UINT32* pcbResponse
 )
 {
-    UINT32 result = TPM_RC_SUCCESS;
+    UINT32 result = 0;// TPM_RC_SUCCESS;
     BYTE* dataIn = NULL;
     unsigned int dataInSize = 0;
     if (hVCom == INVALID_HANDLE_VALUE)
@@ -238,7 +239,7 @@ BOOL TPMVComStartup()
     unsigned char response[10];
     unsigned int responseSize;
 
-    return ((TPMVComSubmitCommand(FALSE, startupClear, sizeof(startupClear), response, sizeof(response), &responseSize) == TPM_RC_SUCCESS) &&
+    return ((TPMVComSubmitCommand(FALSE, startupClear, sizeof(startupClear), response, sizeof(response), &responseSize) == 0 /*TPM_RC_SUCCESS*/) &&
         (responseSize == sizeof(response)) &&
         (*((unsigned int*)response) == 0));
 }
@@ -249,7 +250,7 @@ UINT32 TPMVComShutdown()
     unsigned char response[10];
     unsigned int responseSize;
 
-    return ((TPMVComSubmitCommand(TRUE, shutdownClear, sizeof(shutdownClear), response, sizeof(response), &responseSize) == TPM_RC_SUCCESS) &&
+    return ((TPMVComSubmitCommand(TRUE, shutdownClear, sizeof(shutdownClear), response, sizeof(response), &responseSize) == 0 /*TPM_RC_SUCCESS*/) &&
         (responseSize == sizeof(response)) &&
         (*((unsigned int*)response) == 0));
 }
