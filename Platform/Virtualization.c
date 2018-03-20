@@ -17,24 +17,8 @@ THE SOFTWARE IS PROVIDED *AS IS*, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 // Note: This code was derived from the TCG TPM 2.0 Library Specification at
 // http://www.trustedcomputinggroup.org/resources/tpm_library_specification
 
-#include    "stdafx.h"
-
-#ifdef USE_TPM_SIMULATOR
-// Linked Simulator Hookup
-extern "C"
-{
-    UINT32 TPMSimSubmitCommand(
-        BOOL CloseContext,
-        BYTE* pbCommand,
-        UINT32 cbCommand,
-        BYTE* pbResponse,
-        UINT32 cbResponse,
-        UINT32* pcbResponse
-        );
-    void TPMSimTeardown(void);
-}
-#define PlatformSubmitTPM20Command TPMSimSubmitCommand
-#endif
+#include "stdafx.h"
+#include "Interface.h"
 
 #define MAX_KEYSLOTS (3)
 #define MAX_SESSIONSLOTS (10)
@@ -121,7 +105,7 @@ FlushObject(PCONTEXT_TABLE_OBJECT object)
 
     // Unload the object
     INITIALIZE_CALL_BUFFERS(TPM2_FlushContext, &flushContextIn, &flushContextOut);
-   parms.objectTableIn[TPM2_FlushContext_HdlIn_FlushHandle].generic.handle = object->physicalHdl;
+    parms.objectTableIn[TPM2_FlushContext_HdlIn_FlushHandle].generic.handle = object->physicalHdl;
     EXECUTE_TPM_CALL(FALSE, TPM2_FlushContext);
 
     // Update the object

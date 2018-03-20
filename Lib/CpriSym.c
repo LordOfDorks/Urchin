@@ -28,7 +28,7 @@ THE SOFTWARE IS PROVIDED *AS IS*, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 //** Includes, Defines, and Typedefs
 
-#include    "stdafx.h"
+#include "stdafx.h"
 
 CRYPT_RESULT
 AES_create_key(
@@ -41,6 +41,11 @@ CRYPT_RESULT
 AES_destroy_key(
     PVOID key
 );
+
+#ifdef TRUSTED_CODE
+#define AES_encrypt Urchin_AES_encrypt
+#define AES_decrypt Urchin_AES_decrypt
+#endif
 
 CRYPT_RESULT
 AES_encrypt(

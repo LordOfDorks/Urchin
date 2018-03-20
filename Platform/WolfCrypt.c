@@ -19,7 +19,15 @@ THE SOFTWARE IS PROVIDED *AS IS*, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 #ifdef USE_WOLFCRYPT
 
-#include "stdafx.h"
+#ifdef TRUSTED_CODE
+# include "TrustedHelper.h"
+# include "UrchinLib.h"
+# undef MAX_DIGEST_SIZE
+# define AES_encrypt Urchin_AES_encrypt
+# define AES_decrypt Urchin_AES_decrypt
+#else
+# include "stdafx.h"
+#endif
 
 // Wolf Documentation @ https://wolfssl.com/wolfSSL/Docs-wolfssl-manual-18-wolfcrypt-api-reference.html
 #include "user_settings.h"
@@ -90,7 +98,7 @@ static size_t HashLength(TPM_ALG_ID hashAlg)
     size_t digestLen = 0;
 
     switch (hashAlg) {
-#ifdef TPM_ALG_SHA1
+#if defined(TPM_ALG_SHA1) && !defined(NO_SHA)
     case TPM_ALG_SHA1:
         digestLen = 20;
         break;
@@ -131,10 +139,7 @@ _cpri__CopyHashState(
     UINT16 retVal = 0;
     switch (in->hashAlg)
     {
-#ifdef TPM_ALG_SHA1
-    #ifdef NO_SHA
-        #error NO_SHA and TPM_ALG_SHA1 cannot both be specified.
-    #endif
+#if defined(TPM_ALG_SHA1) && !defined(NO_SHA)
     case TPM_ALG_SHA1:
         if ((out->state.data = malloc(sizeof(wc_Sha))) != NULL)
         {
@@ -150,7 +155,7 @@ _cpri__CopyHashState(
         }
         break;
 #endif
-#ifdef TPM_ALG_SHA384
+#if defined(TPM_ALG_SHA384) && defined(WOLFSSL_SHA384)
     case TPM_ALG_SHA384:
         if ((out->state.data = malloc(sizeof(wc_Sha384))) != NULL)
         {
@@ -179,7 +184,7 @@ UINT16 _cpri__StartHash(TPM_ALG_ID hashAlg,
     if (sequence) return 0;
 
     switch (hashAlg) {
-#ifdef TPM_ALG_SHA1
+#if defined(TPM_ALG_SHA1) && !defined(NO_SHA)
     case TPM_ALG_SHA1:
         if ((hashState->state.data = malloc(sizeof(wc_Sha))) != NULL)
         {
@@ -195,7 +200,7 @@ UINT16 _cpri__StartHash(TPM_ALG_ID hashAlg,
         }
         break;
 #endif
-#ifdef TPM_ALG_SHA384
+#if defined(TPM_ALG_SHA384) && defined(WOLFSSL_SHA384)
     case TPM_ALG_SHA384:
         if ((hashState->state.data = malloc(sizeof(wc_Sha384))) != NULL)
         {
@@ -226,7 +231,7 @@ void _cpri__UpdateHash(PCPRI_HASH_STATE hashState,
 {
     switch (hashState->hashAlg)
     {
-#ifdef TPM_ALG_SHA1
+#if defined(TPM_ALG_SHA1) && !defined(NO_SHA)
     case TPM_ALG_SHA1:
         wc_ShaUpdate((wc_Sha*)hashState->state.data, data, dataSize);
         break;
@@ -236,7 +241,7 @@ void _cpri__UpdateHash(PCPRI_HASH_STATE hashState,
         wc_Sha256Update((wc_Sha256*)hashState->state.data, data, dataSize);
         break;
 #endif
-#ifdef TPM_ALG_SHA384
+#if defined(TPM_ALG_SHA384) && defined(WOLFSSL_SHA384)
     case TPM_ALG_SHA384:
         wc_Sha384Update((wc_Sha384*)hashState->state.data, data, dataSize);
         break;
@@ -258,7 +263,7 @@ UINT16 _cpri__CompleteHash(PCPRI_HASH_STATE hashState,
 
     switch (hashState->hashAlg)
     {
-#ifdef TPM_ALG_SHA1
+#if defined(TPM_ALG_SHA1) && !defined(NO_SHA)
     case TPM_ALG_SHA1:
         wc_ShaFinal((wc_Sha*)hashState->state.data, digest);
         memset(hashState->state.data, 0x00, sizeof(wc_Sha));
@@ -270,7 +275,7 @@ UINT16 _cpri__CompleteHash(PCPRI_HASH_STATE hashState,
         memset(hashState->state.data, 0x00, sizeof(wc_Sha256));
         break;
 #endif
-#ifdef TPM_ALG_SHA384
+#if defined(TPM_ALG_SHA384) && defined(WOLFSSL_SHA384)
     case TPM_ALG_SHA384:
         wc_Sha384Final((wc_Sha384*)hashState->state.data, digest);
         memset(hashState->state.data, 0x00, sizeof(wc_Sha384));
@@ -302,7 +307,7 @@ UINT16 _cpri__HashBlock(TPM_ALG_ID hashAlg,
     {
         switch (hashAlg)
         {
-#ifdef TPM_ALG_SHA1
+#if defined(TPM_ALG_SHA1) && !defined(NO_SHA)
         case TPM_ALG_SHA1:
         {
             wc_Sha context = { 0 };
@@ -322,7 +327,7 @@ UINT16 _cpri__HashBlock(TPM_ALG_ID hashAlg,
             break;
         }
 #endif
-#ifdef TPM_ALG_SHA384
+#if defined(TPM_ALG_SHA384) && defined(WOLFSSL_SHA384)
         case TPM_ALG_SHA384:
         {
             wc_Sha384 context = { 0 };
@@ -616,9 +621,12 @@ AES_create_key(const unsigned char *userKey,
     PVOID *key)
 {
     TPM2B* keyContext = NULL;
+    size_t contextSize;
+
+    contextSize = sizeof(TPM2B) - sizeof(BYTE) + bits / 8 + 1;
 
     // Remember the key
-    if ((keyContext = (TPM2B*)malloc(sizeof(TPM2B))) != NULL)
+    if ((keyContext = (TPM2B*)malloc(contextSize)) != NULL)
     {
         keyContext->size = bits / 8;
         memcpy(keyContext->buffer, userKey, keyContext->size);

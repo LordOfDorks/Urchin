@@ -10,6 +10,7 @@
 #endif
 
 #include <stdint.h>
+#include <malloc.h>
 #ifndef NO_WINDOWS
 #include <windows.h>
 #include <bcrypt.h>

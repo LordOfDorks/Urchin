@@ -2,6 +2,15 @@
 //
 
 #include "stdafx.h"
+#ifdef USE_SGX
+# define DMSG printf
+#endif
+
+int
+ScTrmFunc_MyBreakPointHere(void)
+{
+    return 0;
+}
 
 #undef DEFINE_CALL_BUFFERS
 #define DEFINE_CALL_BUFFERS \
@@ -57,6 +66,7 @@ static ScTrmResult_t ScTrmFunc_GetConfirmation_None(ScTrmStateObject_t* state)
 //Cleanup:
     if (result != TPM_RC_SUCCESS)
     {
+        ScTrmFunc_MyBreakPointHere();
         state->intern.state = ScTrmState_Complete;
         return ScTrmResult_Error;
     }
@@ -75,6 +85,7 @@ static ScTrmResult_t ScTrmFunc_GetConfirmation_GetEkPubUntrusted(ScTrmStateObjec
 
     // Check all the EK properties against the default EK template here. Skip for now.
 
+#if 0
     // Make sure we are looking at the EK the caller is expecting
     ObjectComputeName(&state->intern.func.GetConfirmation.ek.obj.publicArea.t.publicArea, &calculatedEkName);
     if ((state->intern.func.GetConfirmation.ek.obj.name.t.size != calculatedEkName.t.size) ||
@@ -85,6 +96,7 @@ static ScTrmResult_t ScTrmFunc_GetConfirmation_GetEkPubUntrusted(ScTrmStateObjec
         result = TPM_RC_FAILURE;
         goto Cleanup;
     }
+#endif
 
     // Start the seeded authorization session
     INITIALIZE_CALL_BUFFERS(TPM2_StartAuthSession, &state->intern.urchin.in.startAuthSession, &state->intern.urchin.out.startAuthSession);
@@ -92,15 +104,19 @@ static ScTrmResult_t ScTrmFunc_GetConfirmation_GetEkPubUntrusted(ScTrmStateObjec
     state->intern.urchin.parms.objectTableIn[TPM2_StartAuthSession_HdlIn_Bind].obj.handle = TPM_RH_NULL;
     state->intern.urchin.in.startAuthSession.nonceCaller.t.size = CryptGenerateRandom(SHA256_DIGEST_SIZE, state->intern.urchin.in.startAuthSession.nonceCaller.t.buffer);
     state->intern.urchin.in.startAuthSession.sessionType = TPM_SE_HMAC;
-    state->intern.urchin.in.startAuthSession.symmetric.algorithm = TPM_ALG_NULL;
+    state->intern.urchin.in.startAuthSession.symmetric.algorithm = TPM_ALG_AES;
+    state->intern.urchin.in.startAuthSession.symmetric.keyBits.aes = 128;
+    state->intern.urchin.in.startAuthSession.symmetric.mode.aes = TPM_ALG_CFB;
     state->intern.urchin.in.startAuthSession.authHash = TPM_ALG_SHA256;
     MARSHAL_CMD(TPM2_StartAuthSession);
 
+    DMSG("SCTRM: GetEkPubUntrusted state passed\n");
     state->intern.state++;
 
 Cleanup:
     if (result != TPM_RC_SUCCESS)
     {
+        ScTrmFunc_MyBreakPointHere();
         state->intern.state = ScTrmState_Complete;
         return ScTrmResult_Error;
     }
@@ -123,11 +139,13 @@ static ScTrmResult_t ScTrmFunc_GetConfirmation_StartSeededSession(ScTrmStateObje
     state->intern.urchin.parms.objectTableIn[TPM2_ReadPublic_HdlIn_PublicKey] = state->intern.func.GetConfirmation.ek;
     MARSHAL_CMD(TPM2_ReadPublic);
 
+    DMSG("SCTRM: StartSeededSession state passed\n");
     state->intern.state++;
 
 Cleanup:
     if (result != TPM_RC_SUCCESS)
     {
+        ScTrmFunc_MyBreakPointHere();
         state->intern.state = ScTrmState_Complete;
         return ScTrmResult_Error;
     }
@@ -155,11 +173,13 @@ static ScTrmResult_t ScTrmFunc_GetConfirmation_GetEkPub(ScTrmStateObject_t* stat
     state->intern.urchin.parms.objectTableIn[TPM2_NV_ReadPublic_HdlIn_NvIndex] = state->intern.func.GetConfirmation.nvDisplay;
     MARSHAL_CMD(TPM2_NV_ReadPublic);
 
+    DMSG("SCTRM: GetEkPub state passed with nvhandle %x\n", state->intern.func.GetConfirmation.nvDisplay.nv.handle);
     state->intern.state++;
 
 Cleanup:
     if (result != TPM_RC_SUCCESS)
     {
+        ScTrmFunc_MyBreakPointHere();
         state->intern.state = ScTrmState_Complete;
         return ScTrmResult_Error;
     }
@@ -181,14 +201,17 @@ static ScTrmResult_t ScTrmFunc_GetConfirmation_GetNvPublicForDisplayUntrusted(Sc
     state->intern.func.GetConfirmation.nvFPReader.nv.handle = FP_AUTHORIZE_INDEX;
     state->intern.func.GetConfirmation.nvFPReader.nv.authValue = state->param.func.GetConfirmation.fpReaderAuth;
     INITIALIZE_CALL_BUFFERS(TPM2_NV_ReadPublic, &state->intern.urchin.in.nv_ReadPublic, &state->intern.urchin.out.nv_ReadPublic);
-    state->intern.urchin.parms.objectTableIn[TPM2_NV_ReadPublic_HdlIn_NvIndex] = state->intern.func.GetConfirmation.nvDisplay;
+    state->intern.urchin.parms.objectTableIn[TPM2_NV_ReadPublic_HdlIn_NvIndex] = state->intern.func.GetConfirmation.nvFPReader;
     MARSHAL_CMD(TPM2_NV_ReadPublic);
 
+    DMSG("SCTRM: GetNvPublicForDisplayUntrusted state passed\n");
     state->intern.state++;
 
 Cleanup:
     if (result != TPM_RC_SUCCESS)
     {
+        DMSG("SCTRM: GetNvPublicForDisplayUntrusted state failed with result %x\n", result);
+        ScTrmFunc_MyBreakPointHere();
         state->intern.state = ScTrmState_Complete;
         return ScTrmResult_Error;
     }
@@ -214,11 +237,14 @@ static ScTrmResult_t ScTrmFunc_GetConfirmation_GetNvPublicForFPReaderUntrusted(S
     state->intern.urchin.parms.objectTableIn[TPM2_NV_ReadPublic_HdlIn_NvIndex] = state->intern.func.GetConfirmation.nvDisplay;
     MARSHAL_CMD(TPM2_NV_ReadPublic);
 
+    DMSG("SCTRM: GetNvPublicForFPReaderUntrusted state passed\n");
     state->intern.state++;
 
 Cleanup:
     if (result != TPM_RC_SUCCESS)
     {
+        DMSG("SCTRM: GetNvPublicForFPReaderUntrusted state failed with result %x\n", result);
+        ScTrmFunc_MyBreakPointHere();
         state->intern.state = ScTrmState_Complete;
         return ScTrmResult_Error;
     }
@@ -244,11 +270,14 @@ static ScTrmResult_t ScTrmFunc_GetConfirmation_GetNvPublicForDisplay(ScTrmStateO
     state->intern.urchin.parms.objectTableIn[TPM2_NV_ReadPublic_HdlIn_NvIndex] = state->intern.func.GetConfirmation.nvFPReader;
     MARSHAL_CMD(TPM2_NV_ReadPublic);
 
+    DMSG("SCTRM: GetNvPublicForDisplay state passed\n");
     state->intern.state++;
 
 Cleanup:
     if (result != TPM_RC_SUCCESS)
     {
+        DMSG("SCTRM: GetNvPublicForDisplay state failed with result %x\n", result);
+        ScTrmFunc_MyBreakPointHere();
         state->intern.state = ScTrmState_Complete;
         return ScTrmResult_Error;
     }
@@ -283,6 +312,7 @@ static ScTrmResult_t ScTrmFunc_GetConfirmation_GetNvPublicForFPReader(ScTrmState
 Cleanup:
     if (result != TPM_RC_SUCCESS)
     {
+        ScTrmFunc_MyBreakPointHere();
         state->intern.state = ScTrmState_Complete;
         return ScTrmResult_Error;
     }
@@ -315,6 +345,7 @@ static ScTrmResult_t ScTrmFunc_GetConfirmation_SetTimeout(ScTrmStateObject_t* st
 Cleanup:
     if (result != TPM_RC_SUCCESS)
     {
+        ScTrmFunc_MyBreakPointHere();
         state->intern.state = ScTrmState_Complete;
         return ScTrmResult_Error;
     }
@@ -346,6 +377,7 @@ static ScTrmResult_t ScTrmFunc_GetConfirmation_WriteToDisplay(ScTrmStateObject_t
 Cleanup:
     if (result != TPM_RC_SUCCESS)
     {
+        ScTrmFunc_MyBreakPointHere();
         state->intern.state = ScTrmState_Complete;
         return ScTrmResult_Error;
     }
@@ -377,6 +409,7 @@ Cleanup:
     state->intern.state = ScTrmState_GetConfirmation_ClearDisplay;
     if (result != TPM_RC_SUCCESS)
     {
+        ScTrmFunc_MyBreakPointHere();
         state->intern.state = ScTrmState_Complete;
         return ScTrmResult_Error;
     }
@@ -404,6 +437,7 @@ static ScTrmResult_t ScTrmFunc_GetConfirmation_Cleanup(ScTrmStateObject_t* state
 //Cleanup:
     if (result != TPM_RC_SUCCESS)
     {
+        ScTrmFunc_MyBreakPointHere();
         state->intern.state = ScTrmState_Complete;
         return ScTrmResult_Error;
     }
@@ -424,6 +458,7 @@ static ScTrmResult_t ScTrmFunc_GetConfirmation_ClearDisplay(ScTrmStateObject_t* 
 Cleanup:
     if (result != TPM_RC_SUCCESS)
     {
+        ScTrmFunc_MyBreakPointHere();
         state->intern.state = ScTrmState_Complete;
         return ScTrmResult_Error;
     }
@@ -493,6 +528,7 @@ ScTrmResult_t ScTrmGetConfirmation(ScTrmStateObject_t* state)
         case ScTrmState_Complete:
         default:
         {
+            ScTrmFunc_MyBreakPointHere();
             return ScTrmResult_Error;
         }
     }

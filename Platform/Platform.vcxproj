@@ -116,7 +116,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
-      <PreprocessorDefinitions>NO_WINDOWS;USE_WOLFCRYPT;WIN32;_DEBUG;_LIB;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>USE_VCOM_TPM;NO_WINDOWS;USE_WOLFCRYPT;WIN32;_DEBUG;_LIB;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <SDLCheck>true</SDLCheck>
       <AdditionalIncludeDirectories>$(ProjectDir);$(SolutionDir)\Inc;$(ProjectDir)..\Inc;$(SolutionDir)WolfCrypt\;$(ProjectDir)..\WolfCrypt;$(SolutionDir)external\wolfssl\;$(SolutionDir)..\external\wolfssl\;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
@@ -144,7 +144,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
-      <PreprocessorDefinitions>USE_BCRYPT;WIN32;_DEBUG;_LIB;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>USE_VCOM_TPM;NO_WINDOWS;USE_WOLFCRYPT;WIN32;_DEBUG;_LIB;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <SDLCheck>true</SDLCheck>
       <AdditionalIncludeDirectories>$(ProjectDir);$(SolutionDir)\Inc;$(SolutionDir)WolfCrypt\;$(SolutionDir)external\wolfssl\;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
@@ -217,6 +217,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="BCrypt.c" />
+    <ClCompile Include="VCom.c" />
     <ClCompile Include="Virtualization.c" />
     <ClCompile Include="Windows.c" />
     <ClCompile Include="WolfCrypt.c" />

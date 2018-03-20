@@ -228,6 +228,9 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <ProjectReference Include="..\..\Platform\Platform.vcxproj">
+      <Project>{494190cf-79b0-49d9-8dca-bab4cbd5a2e6}</Project>
+    </ProjectReference>
     <ProjectReference Include="..\TrScTrmLib\TrScTrmLib.vcxproj">
       <Project>{474a1eae-f5bd-4f67-a6ee-368eca187540}</Project>
     </ProjectReference>
