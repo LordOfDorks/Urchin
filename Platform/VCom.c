@@ -1,5 +1,6 @@
 #include "windows.h"
 #include "Interface.h"
+#include "windows.h"
 
 HANDLE hVCom = INVALID_HANDLE_VALUE;
 LPCTSTR vcomPort = TEXT("COM5");
