@@ -4,6 +4,9 @@
 #include "stdafx.h"
 #ifdef USE_SGX
 # define DMSG printf
+#else
+#include <stdio.h>
+# define DMSG printf
 #endif
 
 int

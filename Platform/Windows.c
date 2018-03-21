@@ -117,6 +117,10 @@ _cpri__PlatformRelease(
 
 #endif //NO_WINDOWS
 
+#ifndef UNREFERENCED_PARAMETER
+#define UNREFERENCED_PARAMETER(P) (P)
+#endif
+
 int
 TpmFail(
     const char* function,
@@ -128,6 +132,5 @@ TpmFail(
     UNREFERENCED_PARAMETER(line);
     UNREFERENCED_PARAMETER(code);
 
-    assert(0);
-    return 0;
+    __debugbreak();
 }
