@@ -2,11 +2,11 @@
 //
 
 #include "stdafx.h"
-#ifdef USE_SGX
+#ifndef DMSG
 # define DMSG printf
-#else
-#include <stdio.h>
-# define DMSG printf
+#endif
+#ifndef USE_SGX
+# include <stdio.h>
 #endif
 
 int

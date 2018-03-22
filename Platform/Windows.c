@@ -132,5 +132,5 @@ TpmFail(
     UNREFERENCED_PARAMETER(line);
     UNREFERENCED_PARAMETER(code);
 
-    __debugbreak();
+    assert(0);
 }
