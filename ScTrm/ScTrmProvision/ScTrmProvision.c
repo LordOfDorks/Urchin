@@ -403,7 +403,7 @@ int main(int argc, char *argv[])
         in.nvWrite.data.t.size = 0;
         EXECUTE_TPM_CALL(FALSE, TPM2_NV_Write);
 
-        printf("Read template from slot[%u].\n", n);
+        /*printf("Read template from slot[%u].\n", n);
         sessionTable[0].handle = TPM_RS_PW;
         INITIALIZE_CALL_BUFFERS(TPM2_NV_Read, &in.nvRead, &out.nvRead);
         parms.objectTableIn[TPM2_NV_Write_HdlIn_AuthHandle] = fpManageObject[n];
@@ -411,7 +411,7 @@ int main(int argc, char *argv[])
         in.nvRead.offset = 0;
         in.nvRead.size = FP_TEMPLATE_SIZE;
         EXECUTE_TPM_CALL(FALSE, TPM2_NV_Read);
-        memcpy(templateTable[n], out.nvRead.data.t.buffer, out.nvRead.data.t.size);
+        memcpy(templateTable[n], out.nvRead.data.t.buffer, out.nvRead.data.t.size);*/
 
         //printf("Write template back to slot[%u].\n", n);
         //sessionTable[0].handle = TPM_RS_PW;
