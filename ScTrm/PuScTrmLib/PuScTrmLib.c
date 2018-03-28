@@ -2,9 +2,9 @@
 //
 
 #include "stdafx.h"
-
+#define USE_VCOM_TPM
 #ifdef USE_VCOM_TPM
-BOOL TPMVComStartup();
+BOOL TPMVComStartup(void* context);
 UINT32 TPMVComSubmitCommand(
     BOOL CloseContext,
     BYTE* pbCommand,
@@ -17,7 +17,7 @@ UINT32 TPMVComShutdown();
 void TPMVComTeardown(void);
 
 #define PlatformSubmitTPM20Command(context, ...) (TPMVComSubmitCommand(FALSE, ##__VA_ARGS__) == 0x000);
-#define PlatformOpenTPM() ((TPMVComStartup() == 0) ? 1 : 0);
+#define PlatformOpenTPM(context) ((TPMVComStartup(context) == 0) ? 1 : 0);
 #define PlatformCloseTPM TPMVComShutdown
 #define PlatformCancelTPM
 #endif
@@ -56,9 +56,9 @@ TBS_Open( void )
 }
 
 
-__declspec(dllexport) unsigned int ScTrm_Open(void)
+__declspec(dllexport) unsigned int ScTrm_Open(unsigned int context)
 {
-    return PlatformOpenTPM();
+    return PlatformOpenTPM(context);
 }
 
 __declspec(dllexport) void ScTrm_Close(unsigned int context)
