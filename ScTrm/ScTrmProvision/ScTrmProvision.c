@@ -8,8 +8,9 @@ const char fpReaderAuth[] = "SecretFPReaderAuthorization";
 const char fpManageAuth[] = "SecretFPManageAuthorization";
 
 TBS_HCONTEXT g_hTbs = NULL;
-#define USE_VCOM_TPM
-#ifdef USE_VCOM_TPM
+
+#ifdef USE_VCOM
+
 BOOL TPMVComStartup(void* context);
 UINT32 TPMVComSubmitCommand(
     BOOL CloseContext,
@@ -21,12 +22,14 @@ UINT32 TPMVComSubmitCommand(
 );
 UINT32 TPMVComShutdown();
 void TPMVComTeardown(void);
-#define PlatformSubmitTPM20Command TPMVComSubmitCommand
-#endif
 
-#ifndef USE_VCOM_TPM
+#define PlatformSubmitTPM20Command TPMVComSubmitCommand
+
+#else
+
 #define PlatformSubmitTPM20Command WinPlatformSubmitTPM20Command
-#endif
+
+#endif  // USE_VCOM
 
 #define COM_PORT          "VCom"
 #define IS_SWITCH(_s)   ((*(_s) == L'/') || (*(_s) == L'-'))
@@ -105,6 +108,7 @@ WinPlatformSubmitTPM20Command(
         Tbsip_Context_Close(g_hTbs);
         g_hTbs = NULL;
     }
+
     return (UINT32)result;
 }
 
@@ -173,7 +177,7 @@ int main(int argc, char *argv[])
     _cpri__RsaStartup();
     _cpri__SymStartup();
 
-#ifdef USE_VCOM_TPM
+#ifdef USE_VCOM
     TPMVComStartup(vComPort);
 #endif
 
@@ -544,7 +548,7 @@ int main(int argc, char *argv[])
     printf("\n};\n");
 
 Cleanup:
-#ifdef USE_VCOM_TPM
+#ifdef USE_VCOM
     TPMVComShutdown();
 #endif
 
@@ -554,4 +558,3 @@ Cleanup:
 
     return 0;
 }
-

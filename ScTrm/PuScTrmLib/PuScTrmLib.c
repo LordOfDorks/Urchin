@@ -2,8 +2,9 @@
 //
 
 #include "stdafx.h"
-#define USE_VCOM_TPM
-#ifdef USE_VCOM_TPM
+
+#ifdef USE_VCOM
+
 BOOL TPMVComStartup(void* context);
 UINT32 TPMVComSubmitCommand(
     BOOL CloseContext,
@@ -16,21 +17,36 @@ UINT32 TPMVComSubmitCommand(
 UINT32 TPMVComShutdown();
 void TPMVComTeardown(void);
 
-#define PlatformSubmitTPM20Command(context, ...) (TPMVComSubmitCommand(FALSE, ##__VA_ARGS__) == 0x000);
-#define PlatformOpenTPM(context) ((TPMVComStartup(context) == 0) ? 1 : 0);
-#define PlatformCloseTPM TPMVComShutdown
-#define PlatformCancelTPM
-#endif
+#define PlatformSubmitTPM20Command(context, ...) \
+    (TPMVComSubmitCommand(FALSE, ##__VA_ARGS__) == 0x000)
 
-#ifndef USE_VCOM_TPM
-#define PlatformSubmitTPM20Command(context, pbCmd, cbCmd, pbRsp, cbRsp, pcbRsp ) Tbsip_Submit_Command(context, TBS_COMMAND_LOCALITY_ZERO, TBS_COMMAND_PRIORITY_NORMAL, pbCmd, cbCmd, pbRsp, pcbRsp)
-#define PlatformOpenTPM TBS_Open
-#define PlatformCloseTPM(context)  Tbsip_Context_Close((TBS_HCONTEXT)(context))
-#define PlatformCancelTPM(context) (Tbsip_Cancel_Commands((TBS_HCONTEXT)(context)) == TBS_SUCCESS);
-#endif
+#define PlatformOpenTPM(context) \
+    ((TPMVComStartup(context) == 0) ? 1 : 0)
+
+#define PlatformCloseTPM(context) \
+    TPMVComShutdown()
+
+#define PlatformCancelTPM(context) \
+    (FALSE)
+
+#else
+
+#define PlatformSubmitTPM20Command(context, pbCmd, cbCmd, pbRsp, cbRsp, pcbRsp ) \
+    Tbsip_Submit_Command(context, TBS_COMMAND_LOCALITY_ZERO, TBS_COMMAND_PRIORITY_NORMAL, pbCmd, cbCmd, pbRsp, pcbRsp)
+
+#define PlatformOpenTPM(context) \
+    TBS_Open()
+
+#define PlatformCloseTPM(context) \
+    Tbsip_Context_Close((TBS_HCONTEXT)(context))
+
+#define PlatformCancelTPM(context) \
+    (Tbsip_Cancel_Commands((TBS_HCONTEXT)(context)) == TBS_SUCCESS)
+
+#endif  // USE_VCOM
 
 unsigned int
-TBS_Open( void )
+TBS_Open(void)
 {
     TBS_RESULT result = 0;
     TBS_HCONTEXT hTBS = 0;
@@ -55,31 +71,36 @@ TBS_Open( void )
     return (unsigned int)hTBS;
 }
 
-
-__declspec(dllexport) unsigned int ScTrm_Open(unsigned int context)
+unsigned int
+ScTrm_Open(void* context)
 {
     return PlatformOpenTPM(context);
 }
 
-__declspec(dllexport) void ScTrm_Close(unsigned int context)
+void
+ScTrm_Close(void* context)
 {
     PlatformCloseTPM(context);
 }
 
-__declspec(dllexport) BOOL ScTrm_Cancel(unsigned int context)
+BOOL
+ScTrm_Cancel(void* context)
 {
     return PlatformCancelTPM(context);
 }
 
-__declspec(dllexport) BOOL ScTrm_Execute(unsigned int context, unsigned char* pbCmd, unsigned int cbCmd, unsigned char* pbRsp, unsigned int cbRsp, unsigned int* pcbRsp)
+BOOL
+ScTrm_Execute(
+    void* context,
+    unsigned char* pbCmd,
+    unsigned int cbCmd,
+    unsigned char* pbRsp,
+    unsigned int cbRsp,
+    unsigned int* pcbRsp
+)
 {
     TBS_HCONTEXT hTBS = (TBS_HCONTEXT)context;
     *pcbRsp = cbRsp;
-    return PlatformSubmitTPM20Command(
-        hTBS,
-        pbCmd,
-        cbCmd,
-        pbRsp,
-        cbRsp,
-        pcbRsp);
+
+    return PlatformSubmitTPM20Command(hTBS, pbCmd, cbCmd, pbRsp, cbRsp, pcbRsp);
 }
