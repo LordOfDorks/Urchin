@@ -2,14 +2,12 @@
 #include "Interface.h"
 
 HANDLE hVCom = INVALID_HANDLE_VALUE;
-LPCTSTR vcomPort = TEXT("COM5");
+LPCTSTR vcomPort = NULL;
 unsigned int vcomTimeout = 10 * 60 * 1000;
 
 // Nucleo-L476RC based TPM on USB-VCOM
 #pragma pack(push, 1)
-#define TPM_VCOM_PORT TEXT("COM5")
 #define SIGNALMAGIC (0x326d7054)
-#define MAX_TPM_COMMAND_SIZE (2048)
 #define TPM_HEADER_SIZE (10)
 
 typedef enum
@@ -232,11 +230,13 @@ void TPMVComTeardown(void)
     }
 }
 
-BOOL TPMVComStartup()
+BOOL TPMVComStartup(const char *connectString)
 {
     unsigned char startupClear[] = { 0x80, 0x01, 0x00, 0x00, 0x00, 0x0c, 0x00, 0x00, 0x01, 0x44, 0x00, 0x00 };
     unsigned char response[10];
     unsigned int responseSize;
+
+    vcomPort = connectString;
 
     return ((TPMVComSubmitCommand(FALSE, startupClear, sizeof(startupClear), response, sizeof(response), &responseSize) == 0 /*TPM_RC_SUCCESS*/) &&
         (responseSize == sizeof(response)) &&
