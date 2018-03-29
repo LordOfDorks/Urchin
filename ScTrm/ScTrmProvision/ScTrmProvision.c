@@ -9,8 +9,9 @@ const char fpManageAuth[] = "SecretFPManageAuthorization";
 
 TBS_HCONTEXT g_hTbs = NULL;
 
-#ifdef USE_VCOM_TPM
-BOOL TPMVComStartup();
+#ifdef USE_VCOM
+
+BOOL TPMVComStartup(void* context);
 UINT32 TPMVComSubmitCommand(
     BOOL CloseContext,
     BYTE* pbCommand,
@@ -21,12 +22,54 @@ UINT32 TPMVComSubmitCommand(
 );
 UINT32 TPMVComShutdown();
 void TPMVComTeardown(void);
-#define PlatformSubmitTPM20Command TPMVComSubmitCommand
-#endif
 
-#ifndef USE_VCOM_TPM
+#define PlatformSubmitTPM20Command TPMVComSubmitCommand
+
+#else
+
 #define PlatformSubmitTPM20Command WinPlatformSubmitTPM20Command
-#endif
+
+#endif  // USE_VCOM
+
+#define COM_PORT          "VCom"
+#define IS_SWITCH(_s)   ((*(_s) == L'/') || (*(_s) == L'-'))
+
+DWORD
+GetSwitchWithValue(
+    _In_ LONG argc,
+    _In_reads_( argc ) LPSTR argv[],
+    _In_z_ PSTR SwitchSel,
+    _Out_ PSTR *Value
+)
+
+/*++
+
+Routine Description:
+
+    Helper. Checks the argument list for a given switch.
+
+--*/
+
+{
+
+    for (INT i = 1; i < argc; i++) {
+
+        if (IS_SWITCH( argv[i] )) {
+
+            if (_stricmp( argv[i] + 1, SwitchSel ) == 0) {
+                if ((i + 1) == argc) {
+                    break;
+                }
+
+                *Value = argv[i + 1];
+                return ERROR_SUCCESS;
+            }
+        }
+    }
+
+    *Value = NULL;
+    return ERROR_INVALID_PARAMETER;
+}
 
 static UINT32
 WinPlatformSubmitTPM20Command(
@@ -65,6 +108,7 @@ WinPlatformSubmitTPM20Command(
         Tbsip_Context_Close(g_hTbs);
         g_hTbs = NULL;
     }
+
     return (UINT32)result;
 }
 
@@ -118,6 +162,14 @@ int main(int argc, char *argv[])
     ANY_OBJECT displayObject = { 0 };
     unsigned char templateTable[FP_SLOTS][FP_TEMPLATE_SIZE] = { 0 };
     unsigned int ident = 0;
+    PSTR vComPort = NULL;
+
+    if ((argc > 1) &&
+        (GetSwitchWithValue( argc, argv, COM_PORT, &vComPort ) != ERROR_SUCCESS))
+    {
+        wprintf_s(L"Provisions the TPM SecureTerminal\r\n\t/%S\t%s.\n\n", COM_PORT, L"Optional: Specify the communication file to open. e.g. \"COM7\"");
+        return;
+    }
 
     // Prepare Urchin
     _cpri__RngStartup();
@@ -125,8 +177,8 @@ int main(int argc, char *argv[])
     _cpri__RsaStartup();
     _cpri__SymStartup();
 
-#ifdef USE_VCOM_TPM
-    TPMVComStartup();
+#ifdef USE_VCOM
+    TPMVComStartup(vComPort);
 #endif
 
     // Clear the TPM if in FORCE mode
@@ -403,15 +455,15 @@ int main(int argc, char *argv[])
         in.nvWrite.data.t.size = 0;
         EXECUTE_TPM_CALL(FALSE, TPM2_NV_Write);
 
-        printf("Read template from slot[%u].\n", n);
-        sessionTable[0].handle = TPM_RS_PW;
-        INITIALIZE_CALL_BUFFERS(TPM2_NV_Read, &in.nvRead, &out.nvRead);
-        parms.objectTableIn[TPM2_NV_Write_HdlIn_AuthHandle] = fpManageObject[n];
-        parms.objectTableIn[TPM2_NV_Write_HdlIn_NvIndex] = fpManageObject[n];
-        in.nvRead.offset = 0;
-        in.nvRead.size = FP_TEMPLATE_SIZE;
-        EXECUTE_TPM_CALL(FALSE, TPM2_NV_Read);
-        memcpy(templateTable[n], out.nvRead.data.t.buffer, out.nvRead.data.t.size);
+        //printf("Read template from slot[%u].\n", n);
+        //sessionTable[0].handle = TPM_RS_PW;
+        //INITIALIZE_CALL_BUFFERS(TPM2_NV_Read, &in.nvRead, &out.nvRead);
+        //parms.objectTableIn[TPM2_NV_Write_HdlIn_AuthHandle] = fpManageObject[n];
+        //parms.objectTableIn[TPM2_NV_Write_HdlIn_NvIndex] = fpManageObject[n];
+        //in.nvRead.offset = 0;
+        //in.nvRead.size = FP_TEMPLATE_SIZE;
+        //EXECUTE_TPM_CALL(FALSE, TPM2_NV_Read);
+        //memcpy(templateTable[n], out.nvRead.data.t.buffer, out.nvRead.data.t.size);
 
         //printf("Write template back to slot[%u].\n", n);
         //sessionTable[0].handle = TPM_RS_PW;
@@ -496,7 +548,7 @@ int main(int argc, char *argv[])
     printf("\n};\n");
 
 Cleanup:
-#ifdef USE_VCOM_TPM
+#ifdef USE_VCOM
     TPMVComShutdown();
 #endif
 
@@ -506,4 +558,3 @@ Cleanup:
 
     return 0;
 }
-

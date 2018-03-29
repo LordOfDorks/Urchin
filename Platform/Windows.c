@@ -133,4 +133,7 @@ TpmFail(
     UNREFERENCED_PARAMETER(code);
 
     assert(0);
+
+    // This avoids a warning.
+    return -1;
 }
