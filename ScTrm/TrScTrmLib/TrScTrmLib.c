@@ -70,7 +70,7 @@ static ScTrmResult_t ScTrmFunc_GetConfirmation_None(ScTrmStateObject_t* state)
     if (result != TPM_RC_SUCCESS)
     {
         ScTrmFunc_MyBreakPointHere();
-        state->intern.state = ScTrmState_Complete;
+        state->intern.state = ScTrmState_Complete_Error;
         return ScTrmResult_Error;
     }
     return ScTrmResult_Ongoing;
@@ -120,7 +120,7 @@ Cleanup:
     if (result != TPM_RC_SUCCESS)
     {
         ScTrmFunc_MyBreakPointHere();
-        state->intern.state = ScTrmState_Complete;
+        state->intern.state = ScTrmState_Complete_Error;
         return ScTrmResult_Error;
     }
     return ScTrmResult_Ongoing;
@@ -149,7 +149,7 @@ Cleanup:
     if (result != TPM_RC_SUCCESS)
     {
         ScTrmFunc_MyBreakPointHere();
-        state->intern.state = ScTrmState_Complete;
+        state->intern.state = ScTrmState_Complete_Error;
         return ScTrmResult_Error;
     }
     return ScTrmResult_Ongoing;
@@ -183,7 +183,7 @@ Cleanup:
     if (result != TPM_RC_SUCCESS)
     {
         ScTrmFunc_MyBreakPointHere();
-        state->intern.state = ScTrmState_Complete;
+        state->intern.state = ScTrmState_Complete_Error;
         return ScTrmResult_Error;
     }
     return ScTrmResult_Ongoing;
@@ -215,7 +215,7 @@ Cleanup:
     {
         DMSG("SCTRM: GetNvPublicForDisplayUntrusted state failed with result %x\n", result);
         ScTrmFunc_MyBreakPointHere();
-        state->intern.state = ScTrmState_Complete;
+        state->intern.state = ScTrmState_Complete_Error;
         return ScTrmResult_Error;
     }
     return ScTrmResult_Ongoing;
@@ -248,7 +248,7 @@ Cleanup:
     {
         DMSG("SCTRM: GetNvPublicForFPReaderUntrusted state failed with result %x\n", result);
         ScTrmFunc_MyBreakPointHere();
-        state->intern.state = ScTrmState_Complete;
+        state->intern.state = ScTrmState_Complete_Error;
         return ScTrmResult_Error;
     }
     return ScTrmResult_Ongoing;
@@ -281,7 +281,7 @@ Cleanup:
     {
         DMSG("SCTRM: GetNvPublicForDisplay state failed with result %x\n", result);
         ScTrmFunc_MyBreakPointHere();
-        state->intern.state = ScTrmState_Complete;
+        state->intern.state = ScTrmState_Complete_Error;
         return ScTrmResult_Error;
     }
     return ScTrmResult_Ongoing;
@@ -316,10 +316,45 @@ Cleanup:
     if (result != TPM_RC_SUCCESS)
     {
         ScTrmFunc_MyBreakPointHere();
-        state->intern.state = ScTrmState_Complete;
+        state->intern.state = ScTrmState_Complete_Error;
         return ScTrmResult_Error;
     }
     return ScTrmResult_Ongoing;
+}
+
+static void ScTrmFunc_GetConfirmation_Marshal_WriteToDisplay(ScTrmStateObject_t* state)
+{
+    DEFINE_CALL_BUFFERS;
+
+    // Write the message to the display
+    state->intern.urchin.sessionTable[0] = state->intern.func.GetConfirmation.seededSession;
+    state->intern.urchin.sessionTable[0].attributes.decrypt = SET;
+    state->intern.urchin.sessionTable[0].attributes.continueSession = SET;
+    INITIALIZE_CALL_BUFFERS(TPM2_NV_Write, &state->intern.urchin.in.nv_Write, &state->intern.urchin.out.nv_Write);
+    state->intern.urchin.parms.objectTableIn[TPM2_NV_Write_HdlIn_AuthHandle] = state->intern.func.GetConfirmation.nvDisplay;
+    state->intern.urchin.parms.objectTableIn[TPM2_NV_Write_HdlIn_NvIndex] = state->intern.func.GetConfirmation.nvDisplay;
+    state->intern.urchin.in.nv_Write.offset = 0;
+    state->intern.urchin.in.nv_Write.data = state->param.func.GetConfirmation.displayMessage;
+    MARSHAL_CMD(TPM2_NV_Write);
+}
+
+static ScTrmResult_t ScTrmFunc_GetConfirmation_ReadyToDisplay(ScTrmStateObject_t* state)
+{
+    // Make sure we really are ready to display by validating required state.
+    if (state->intern.func.GetConfirmation.nvDisplay.nv.handle != 0 &&
+        state->intern.func.GetConfirmation.nvFPReader.nv.handle != 0 &&
+        state->intern.func.GetConfirmation.ek.nv.handle != 0 &&
+        state->intern.func.GetConfirmation.seededSession.handle != 0)
+    {
+        ScTrmFunc_GetConfirmation_Marshal_WriteToDisplay( state );
+        state->intern.state = ScTrmState_GetConfirmation_WriteToDisplay;
+        return ScTrmResult_Ongoing;
+    }
+
+    // Unexpected. Reset the state machine and create the session state anew.
+    // todo: read and clear all active TPM sessions
+    state->intern.state = ScTrmState_None;
+    return ScTrmFunc_GetConfirmation_None(state);
 }
 
 static ScTrmResult_t ScTrmFunc_GetConfirmation_SetTimeout(ScTrmStateObject_t* state)
@@ -333,23 +368,14 @@ static ScTrmResult_t ScTrmFunc_GetConfirmation_SetTimeout(ScTrmStateObject_t* st
     state->intern.func.GetConfirmation.seededSession = state->intern.urchin.sessionTable[0];
 
     // Write the message to the display
-    state->intern.urchin.sessionTable[0] = state->intern.func.GetConfirmation.seededSession;
-    state->intern.urchin.sessionTable[0].attributes.decrypt = SET;
-    state->intern.urchin.sessionTable[0].attributes.continueSession = SET;
-    INITIALIZE_CALL_BUFFERS(TPM2_NV_Write, &state->intern.urchin.in.nv_Write, &state->intern.urchin.out.nv_Write);
-    state->intern.urchin.parms.objectTableIn[TPM2_NV_Write_HdlIn_AuthHandle] = state->intern.func.GetConfirmation.nvDisplay;
-    state->intern.urchin.parms.objectTableIn[TPM2_NV_Write_HdlIn_NvIndex] = state->intern.func.GetConfirmation.nvDisplay;
-    state->intern.urchin.in.nv_Write.offset = 0;
-    state->intern.urchin.in.nv_Write.data = state->param.func.GetConfirmation.displayMessage;
-    MARSHAL_CMD(TPM2_NV_Write);
-
+    ScTrmFunc_GetConfirmation_Marshal_WriteToDisplay( state );
     state->intern.state++;
 
 Cleanup:
     if (result != TPM_RC_SUCCESS)
     {
         ScTrmFunc_MyBreakPointHere();
-        state->intern.state = ScTrmState_Complete;
+        state->intern.state = ScTrmState_Complete_Error;
         return ScTrmResult_Error;
     }
     return ScTrmResult_Ongoing;
@@ -381,7 +407,7 @@ Cleanup:
     if (result != TPM_RC_SUCCESS)
     {
         ScTrmFunc_MyBreakPointHere();
-        state->intern.state = ScTrmState_Complete;
+        state->intern.state = ScTrmState_Complete_Error;
         return ScTrmResult_Error;
     }
     return ScTrmResult_Ongoing;
@@ -397,7 +423,9 @@ static ScTrmResult_t ScTrmFunc_GetConfirmation_ReadFPId(ScTrmStateObject_t* stat
     state->intern.func.GetConfirmation.seededSession = state->intern.urchin.sessionTable[0];
     if (result == TPM_RC_CANCELED)
     {
+        // Timeout detected. Reset the TPM state so that the statemachine resumes to Clear the display
         state->intern.result = ScTrmResult_Timeout;
+        result = TPM_RC_SUCCESS;
         goto Cleanup;
     }
     else if ((result != TPM_RC_SUCCESS) ||
@@ -413,7 +441,7 @@ Cleanup:
     if (result != TPM_RC_SUCCESS)
     {
         ScTrmFunc_MyBreakPointHere();
-        state->intern.state = ScTrmState_Complete;
+        state->intern.state = ScTrmState_Complete_Error;
         return ScTrmResult_Error;
     }
     return ScTrmFunc_GetConfirmation_Cleanup(state);
@@ -426,7 +454,6 @@ static ScTrmResult_t ScTrmFunc_GetConfirmation_Cleanup(ScTrmStateObject_t* state
 
     // Clear the display
     state->intern.urchin.sessionTable[0] = state->intern.func.GetConfirmation.seededSession;
-    state->intern.urchin.sessionTable[0].attributes.continueSession = CLEAR;
     INITIALIZE_CALL_BUFFERS(TPM2_NV_Write, &state->intern.urchin.in.nv_Write, &state->intern.urchin.out.nv_Write);
     state->intern.urchin.parms.objectTableIn[TPM2_NV_Write_HdlIn_AuthHandle] = state->intern.func.GetConfirmation.nvDisplay;
     state->intern.urchin.parms.objectTableIn[TPM2_NV_Write_HdlIn_NvIndex] = state->intern.func.GetConfirmation.nvDisplay;
@@ -441,7 +468,7 @@ static ScTrmResult_t ScTrmFunc_GetConfirmation_Cleanup(ScTrmStateObject_t* state
     if (result != TPM_RC_SUCCESS)
     {
         ScTrmFunc_MyBreakPointHere();
-        state->intern.state = ScTrmState_Complete;
+        state->intern.state = ScTrmState_Complete_Error;
         return ScTrmResult_Error;
     }
     return ScTrmResult_Ongoing;
@@ -456,13 +483,15 @@ static ScTrmResult_t ScTrmFunc_GetConfirmation_ClearDisplay(ScTrmStateObject_t* 
     UNMARSHAL_RSP(TPM2_NV_Write);
     state->intern.func.GetConfirmation.seededSession = state->intern.urchin.sessionTable[0];
 
-    state->intern.state = ScTrmState_Complete;
+    // Transistion to ScTrmState_None when we are done.
+    // This will preserve TPM session state for the next run.
+    state->intern.state = ScTrmState_GetConfirmation_ReadyToDisplay;
 
 Cleanup:
     if (result != TPM_RC_SUCCESS)
     {
         ScTrmFunc_MyBreakPointHere();
-        state->intern.state = ScTrmState_Complete;
+        state->intern.state = ScTrmState_Complete_Error;
         return ScTrmResult_Error;
     }
     return state->intern.result;
@@ -483,6 +512,10 @@ ScTrmResult_t ScTrmGetConfirmation(ScTrmStateObject_t* state)
         case ScTrmState_None:
         {
             return ScTrmFunc_GetConfirmation_None(state);
+        }
+        case ScTrmState_GetConfirmation_ReadyToDisplay:
+        {
+            return ScTrmFunc_GetConfirmation_ReadyToDisplay(state);
         }
         case ScTrmState_GetConfirmation_GetEkPubUntrusted:
         {
@@ -528,7 +561,7 @@ ScTrmResult_t ScTrmGetConfirmation(ScTrmStateObject_t* state)
         {
             return ScTrmFunc_GetConfirmation_ClearDisplay(state);
         }
-        case ScTrmState_Complete:
+        case ScTrmState_Complete_Error:
         default:
         {
             ScTrmFunc_MyBreakPointHere();

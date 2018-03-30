@@ -23,8 +23,9 @@ typedef enum
     ScTrmState_GetConfirmation_WriteToDisplay,
     ScTrmState_GetConfirmation_ReadFPId,
     ScTrmState_GetConfirmation_ClearDisplay,
+    ScTrmState_GetConfirmation_ReadyToDisplay,
 
-    ScTrmState_Complete = -1
+    ScTrmState_Complete_Error = -1
 } ScTrmState_t;
 
 typedef struct
