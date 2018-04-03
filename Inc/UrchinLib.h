@@ -13014,6 +13014,54 @@ INT32 *size
 		result = __CommandType##_Unmarshal(sessionTable, sessionCnt, &parms, &buffer, &size); \
 	} \
 
+// context based option.
+typedef struct _URCHIN_CALLBUFFERS
+{
+    BYTE pbCmd[2048];
+    UINT32 cbCmd;
+    BYTE pbRsp[2048];
+    UINT32 cbRsp;
+    BYTE *buffer;
+    INT32 size;
+    Marshal_Parms parms;
+    SESSION sessionTable[MAX_HANDLE_NUM];
+    UINT32 sessionCnt;
+} URCHIN_CALLBUFFERS;
+
+#define INITIALIZE_CALL_BUFFERS_CTX(__Ctx, __CommandType, __InParm, __OutParm) \
+    (__Ctx)->sessionCnt = __CommandType##_SessionCnt; \
+    (__Ctx)->buffer = (__Ctx)->pbCmd; \
+    (__Ctx)->size = sizeof((__Ctx)->pbCmd); \
+    MemorySet(&(__Ctx)->parms, 0x00, sizeof((__Ctx)->parms)); \
+    MemorySet(__InParm, 0x00, sizeof(*__InParm)); \
+    MemorySet(__OutParm, 0x00, sizeof(*__OutParm)); \
+    (__Ctx)->parms.parmIn = (void*)__InParm; \
+    (__Ctx)->parms.parmOut = (void*)__OutParm; \
+    (__Ctx)->parms.objectCntIn = __CommandType##_HdlCntIn; \
+    (__Ctx)->parms.objectCntOut = __CommandType##_HdlCntOut; \
+
+#define EXECUTE_TPM_CALL_CTX(__Ctx, __CloseContext, __CommandType) \
+    (__Ctx)->cbCmd = __CommandType##_Marshal((__Ctx)->sessionTable, (__Ctx)->sessionCnt, &(__Ctx)->parms, &(__Ctx)->buffer, &(__Ctx)->size); \
+    if ((result = PlatformSubmitTPM20Command(__CloseContext, (__Ctx)->pbCmd, (__Ctx)->cbCmd, (__Ctx)->pbRsp, sizeof((__Ctx)->pbRsp), &(__Ctx)->cbRsp)) != TPM_RC_SUCCESS) \
+    { \
+        goto Cleanup; \
+    } \
+    (__Ctx)->buffer = (__Ctx)->pbRsp; \
+    (__Ctx)->size = (__Ctx)->cbRsp; \
+    if ((result = __CommandType##_Unmarshal((__Ctx)->sessionTable, (__Ctx)->sessionCnt, &(__Ctx)->parms, &(__Ctx)->buffer, &(__Ctx)->size)) != TPM_RC_SUCCESS) \
+    { \
+        goto Cleanup; \
+    } \
+
+#define TRY_TPM_CALL_CTX(__Ctx,__CloseContext, __CommandType) \
+    (__Ctx)->cbCmd = __CommandType##_Marshal((__Ctx)->sessionTable, (__Ctx)->sessionCnt, &(__Ctx)->parms, &(__Ctx)->buffer, &(__Ctx)->size); \
+    if ((result = PlatformSubmitTPM20Command(__CloseContext, (__Ctx)->pbCmd, (__Ctx)->cbCmd, (__Ctx)->pbRsp, sizeof((__Ctx)->pbRsp), &(__Ctx)->cbRsp)) == TPM_RC_SUCCESS) \
+    { \
+        (__Ctx)->buffer = (__Ctx)->pbRsp; \
+        (__Ctx)->size = (__Ctx)->cbRsp; \
+        result = __CommandType##_Unmarshal((__Ctx)->sessionTable, (__Ctx)->sessionCnt, &(__Ctx)->parms, &(__Ctx)->buffer, &(__Ctx)->size); \
+    } \
+
 // Windows defined constants
 #define TPM_20_SRK_HANDLE 0x81000001
 #define TPM_20_EK_HANDLE 0x81010001
