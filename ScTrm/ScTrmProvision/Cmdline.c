@@ -10,11 +10,13 @@
 #define SW_READ_EK_INFO      "Reads (and creates if missing) the EK and prints it to the screen."
 #define SW_ENROLL            "Enroll"
 #define SW_ENROLL_INFO       "Enrolls a new fingerprint in the given slot # (max 200)."
-#define SW_VALIDATE_FP       "TestFp"
+#define SW_VALIDATE_FP       "Test"
 #define SW_VALIDATE_FP_INFO  "Validates a specific fingerprint is enrolled"
 #define SW_CLEAR_FP          "Clear"
 #define SW_CLEAR_FP_INFO     "Clear slot #. If no number provided, clear all enrolled fingerprint templates."
 #define IS_SWITCH(_s)   ((*(_s) == '/') || (*(_s) == '-'))
+
+char * g_ValidSwitch[] = { SW_COM_PORT, SW_FORCE, SW_READ_EK, SW_ENROLL, SW_VALIDATE_FP, SW_CLEAR_FP };
 
 VOID
 PrintUsage(
@@ -22,15 +24,39 @@ PrintUsage(
 )
 {
     printf_s( "\nUsage:  %s ", argv[0]);
-    printf_s( " /%s <slot#> /%s <COM> /%s <slot#>\n\n",
-              SW_ENROLL, SW_COM_PORT, SW_CLEAR_FP);
-    printf_s( "\t%s\t%s\n", SW_ENROLL, SW_ENROLL_INFO);
-    printf_s( "\t%s\t%s\n", SW_VALIDATE_FP, SW_VALIDATE_FP_INFO);
-    printf_s( "\t%s\t%s\n", SW_COM_PORT, SW_COM_PORT_INFO);
-    printf_s( "\t%s\t%s\n", SW_FORCE, SW_FORCE_INFO);
-    printf_s( "\t%s\t%s\n", SW_READ_EK, SW_READ_EK_INFO);
-    printf_s( "\t%s\t%s\n", SW_CLEAR_FP, SW_CLEAR_FP_INFO);
+    printf_s( "  [/%s <COM>] [/%s <slot#>] [/%s <slot#>] [/%s] [/%s] [/%s]\n\n",
+              SW_COM_PORT, SW_ENROLL, SW_CLEAR_FP, SW_VALIDATE_FP, SW_FORCE, SW_READ_EK);
+    printf_s( "    /%s <COM>\t\t- %s\n", SW_COM_PORT, SW_COM_PORT_INFO);
+    printf_s( "    /%s <slot#>\t- %s\n", SW_ENROLL, SW_ENROLL_INFO);
+    printf_s( "    /%s <slot#>\t- %s\n", SW_CLEAR_FP, SW_CLEAR_FP_INFO);
+    printf_s( "    /%s\t\t- %s\n", SW_VALIDATE_FP, SW_VALIDATE_FP_INFO);
+    printf_s( "    /%s\t\t- %s\n", SW_FORCE, SW_FORCE_INFO);
+    printf_s( "    /%s\t\t- %s\n", SW_READ_EK, SW_READ_EK_INFO);
     printf_s( "\n");
+}
+
+BOOLEAN
+IsSwitchUnknown(
+    int argc, char *argv[]
+)
+{
+    BOOLEAN valid;
+    for (INT i = 1; i < argc; i++) {
+        if (IS_SWITCH( argv[i] )) {
+            valid = false;
+            for (INT j = 0; j < ARRAYSIZE(g_ValidSwitch); j++) {
+                if (_stricmp( argv[i] + 1, g_ValidSwitch[j] ) == 0) {
+                    valid = true;
+                    break;
+                }
+            }
+            if (!valid) {
+                printf_s( "ERROR: Invalid option    %s\n", argv[i]);
+                return TRUE;
+            }
+        }
+    }
+    return FALSE;
 }
 
 BOOLEAN
@@ -138,21 +164,24 @@ GetCmdlineParams(
 {
     if (argc <= 1)
     {
-        return 0;
+        PrintUsage(argc, argv);
+        return -1;
     }
 
-    if (IsSwitchActive( argc, argv, "?" ))
+    if (IsSwitchActive( argc, argv, "?" ) ||
+        IsSwitchUnknown(argc, argv))
     {
         PrintUsage(argc, argv);
         return -1;
     }
 
-    GetSwitchWithValue( argc, argv, SW_COM_PORT, &param->vComPort );
     param->force = IsSwitchActive( argc, argv, SW_FORCE );
     param->readEK = IsSwitchActive( argc, argv, SW_READ_EK );
     param->enroll = IsSwitchActive( argc, argv, SW_ENROLL );
     param->test = IsSwitchActive( argc, argv, SW_VALIDATE_FP );
     param->clear = IsSwitchActive( argc, argv, SW_CLEAR_FP );
+
+    GetSwitchWithValue( argc, argv, SW_COM_PORT, &param->vComPort );
 
     if (param->enroll) {
         if (GetSwitchWithIntValue( argc, argv, SW_ENROLL, &param->enrollSlot ) != ERROR_SUCCESS)
@@ -168,6 +197,10 @@ GetCmdlineParams(
         {
             param->clearSlot = CLEAR_ALL_SLOTS;
         }
+    }
+
+    if (param->test) {
+        param->readEK = TRUE;
     }
 
     return 0;

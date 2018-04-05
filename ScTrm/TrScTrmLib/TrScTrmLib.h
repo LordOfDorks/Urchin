@@ -23,7 +23,11 @@ typedef enum
     ScTrmState_GetConfirmation_WriteToDisplay,
     ScTrmState_GetConfirmation_ReadFPId,
     ScTrmState_GetConfirmation_ClearDisplay,
-    ScTrmState_GetConfirmation_ReadyToDisplay,
+
+    // The following are not sequential 
+    ScTrmState_GetConfirmation_ReadyToDisplay = 0x0FF0,
+    ScTrmState_GetConfirmation_Recovery_GetCapability,
+    ScTrmState_GetConfirmation_Recovery_FlushHandle,
 
     ScTrmState_Complete_Error = -1
 } ScTrmState_t;
@@ -75,6 +79,7 @@ typedef struct
     {
         ScTrmState_t state;
         ScTrmResult_t result;
+        int recovery;
         struct
         {
             Marshal_Parms parms;
@@ -87,6 +92,8 @@ typedef struct
                 NV_ReadPublic_In nv_ReadPublic;
                 NV_Write_In nv_Write;
                 NV_Read_In nv_Read;
+                GetCapability_In getCapability;
+                FlushContext_In flushContext;
             } in;
             union
             {
@@ -95,6 +102,8 @@ typedef struct
                 NV_ReadPublic_Out nv_ReadPublic;
                 NV_Write_Out nv_Write;
                 NV_Read_Out nv_Read;
+                GetCapability_Out getCapability;
+                FlushContext_Out flushContext;
             } out;
         } urchin;
         union
@@ -105,7 +114,4 @@ typedef struct
 } ScTrmStateObject_t;
 #pragma pack(pop)
 
-#ifndef USE_OPTEE
-__declspec(dllexport) 
-#endif
 ScTrmResult_t ScTrmGetConfirmation(ScTrmStateObject_t* state);

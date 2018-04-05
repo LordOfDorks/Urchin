@@ -3,6 +3,7 @@
 
 #include "stdafx.h"
 #include "Cmdline.h"
+#include "TrScTrmLib.h"
 #include "Interface.h"
 
 const char dispAuth[] = "SecretDisplayAuthorization";
@@ -67,6 +68,7 @@ typedef struct _SCTRM_CTX
 
     ANY_OBJECT displayObject;
     ANY_OBJECT fpReaderObject;
+    ANY_OBJECT ekObject;
 
 } SCTRM_CTX;
 
@@ -461,6 +463,8 @@ ReadEK(
     printf("\n};\n");
     printf( "-------------------------------------------------------\n" );
 
+    ctx->ekObject = ekObject;
+
 Cleanup:
 
     if (result != TPM_RC_SUCCESS) {
@@ -524,6 +528,68 @@ Cleanup:
 }
 
 int
+RunConfirmation(SCTRM_CTX *ctx, const char* message)
+{
+     // Secure side: variables
+    ScTrmResult_t secReturn = ScTrmResult_Ongoing;
+    ScTrmStateObject_t secState = { 0 };
+
+    // Secure side: Fill out the parameters for the call
+    secState.param.func.GetConfirmation.displayAuth.t.size = (UINT16)strlen(dispAuth); // Display authorization
+    strcpy_s((char*)secState.param.func.GetConfirmation.displayAuth.t.buffer,
+        sizeof(secState.param.func.GetConfirmation.displayAuth.t.buffer),
+        dispAuth);
+
+    secState.param.func.GetConfirmation.fpReaderAuth.t.size = (UINT16)strlen(fpReaderAuth); // FP reader authorization
+    strcpy_s((char*)secState.param.func.GetConfirmation.fpReaderAuth.t.buffer,
+        sizeof(secState.param.func.GetConfirmation.fpReaderAuth.t.buffer),
+        fpReaderAuth);
+    secState.param.func.GetConfirmation.displayMessage.t.size = (UINT16)strlen(message) + 1; // Include the terminator
+    strcpy_s((char*)secState.param.func.GetConfirmation.displayMessage.t.buffer,
+        sizeof(secState.param.func.GetConfirmation.displayMessage.t.buffer),
+        message);
+    //secState.param.func.GetConfirmation.ekName.t.size = ctx->ekObject.obj.name.t.size; // Expected EK to ensure we are talking to the right device
+    memcpy(&secState.param.func.GetConfirmation.ekName, &ctx->ekObject.obj.name, sizeof(ctx->ekObject.obj.name));
+    secState.param.func.GetConfirmation.timeout = 20 * 1000; // 20 second timeout to wait for a fingerprint
+
+    do
+    {
+        // Secure side: Crank the state machine 
+        if ((secReturn = ScTrmGetConfirmation( &secState )) == ScTrmResult_Ongoing)
+        {
+            if (PlatformSubmitTPM20Command( FALSE, secState.param.pbCmd, secState.param.cbCmd, secState.param.pbRsp, sizeof( secState.param.pbRsp ), &secState.param.cbRsp ) != TPM_RC_SUCCESS)
+            {
+                secReturn = ScTrmResult_CommError;
+                break;
+            }
+        }
+    } while (secReturn == ScTrmResult_Ongoing);
+    // Secure side: The ping-pong has completed, let's parse the result to see what happend
+    if (secReturn < 0)
+    {
+        printf( "ERROR: Sec error 0x%08x\n", secReturn );
+    }
+    else if (secReturn <= ScTrmResult_MatchMax)
+    {
+        printf( "Finger %u recognized, operation confirmed.\n", secReturn );
+    }
+    else if (secReturn == ScTrmResult_Unrecognized)
+    {
+        printf( "Unrecognized finger pressed, operation canceled.\n" );
+    }
+    else if (secReturn == ScTrmResult_Timeout)
+    {
+        printf( "No finger pressed, operation canceled.\n" );
+    }
+    else
+    {
+        printf( "Error occurred.\n" );
+    }
+
+    return secReturn;
+}
+
+int
 SendFPCommand(
     SCTRM_CTX *ctx,
     ANY_OBJECT *fpObject,
@@ -574,10 +640,9 @@ int main(int argc, char *argv[])
     _cpri__SymStartup();
 
     // Parse all cmd line options.
-    if (GetCmdlineParams(argc, argv, &cmd) != 0) {
+    if (GetCmdlineParams( argc, argv, &cmd ) != 0) {
         return;
     }
-
 #ifdef USE_VCOM
     printf("Connecting to TPM on %s\n", cmd.vComPort == NULL ? DEFAULT_VCOM_PORT : cmd.vComPort );
     TPMVComStartup(cmd.vComPort);
@@ -646,7 +711,7 @@ int main(int argc, char *argv[])
         }
 
         CLEAR_DISPLAY;
-
+        printf("Validating enrollment.\n");
         if (!ValidateFB( &ctx, &slot )) {
 
             printf("Validation failed!\n");
@@ -667,14 +732,15 @@ int main(int argc, char *argv[])
     }
 
     if (cmd.test) {
-
-        printf( "Validating finger is enrolled..\n" );
-        if (!ValidateFB( &ctx, &slot)) {
+        int rSlot;
+        printf( "Running Confirmation\n" );
+        rSlot = RunConfirmation( &ctx, "\nPlease Authorize XYZ." );
+        if (rSlot > 199 || rSlot < 0) {
             printf( "Error: Failed to validate finger.\n" );
         }
         else {
-            printf( "Validation succeeded. Fingerprint is enrolled in slot %d.\n", slot );
-            WriteToDisplay(&ctx, "\n%sSuccess. slot[%d] enrolled.\n", ESC_FONT_GREEN, cmd.enrollSlot);
+            printf( "Validation succeeded. Fingerprint is enrolled in slot %d.\n", rSlot );
+            WriteToDisplay(&ctx, "\n%sSuccess. slot[%d] enrolled.\n", ESC_FONT_GREEN, rSlot);
         }
     }
 

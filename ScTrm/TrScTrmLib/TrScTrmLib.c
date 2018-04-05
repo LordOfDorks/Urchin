@@ -126,6 +126,88 @@ Cleanup:
     return ScTrmResult_Ongoing;
 }
 
+static void ScTrmFunc_GetConfirmation_Marshal_GetCapability( ScTrmStateObject_t* state )
+{
+    DEFINE_CALL_BUFFERS
+
+    // Recovery. Read all the open sessions so we can close them.
+    INITIALIZE_CALL_BUFFERS( TPM2_GetCapability, &state->intern.urchin.in.getCapability, &state->intern.urchin.out.getCapability );
+    state->intern.urchin.in.getCapability.capability = TPM_CAP_HANDLES;
+    state->intern.urchin.in.getCapability.property = 0x02000000;
+    state->intern.urchin.in.getCapability.propertyCount = 1;
+    MARSHAL_CMD(TPM2_GetCapability);
+
+    state->intern.state = ScTrmState_GetConfirmation_Recovery_GetCapability;
+
+}
+
+static ScTrmResult_t ScTrmFunc_GetConfirmation_StartRecovery( ScTrmStateObject_t* state )
+{
+    // Only attempt recovery once.
+    if (state->intern.recovery == 1) {
+        ScTrmFunc_MyBreakPointHere();
+        state->intern.state = ScTrmState_Complete_Error;
+        return ScTrmResult_Error;
+    }
+
+    state->intern.recovery = 1;
+    ScTrmFunc_GetConfirmation_Marshal_GetCapability( state );
+
+    return ScTrmResult_Ongoing;
+}
+
+static ScTrmResult_t ScTrmFunc_GetConfirmation_Recovery_FlushHandle( ScTrmStateObject_t* state )
+{
+    DEFINE_CALL_BUFFERS
+    UINT32 result = TPM_RC_SUCCESS;
+    UNMARSHAL_RSP(TPM2_FlushContext);
+
+    ScTrmFunc_GetConfirmation_Marshal_GetCapability( state );
+
+Cleanup:
+    if (result != TPM_RC_SUCCESS)
+    {
+        ScTrmFunc_MyBreakPointHere();
+        state->intern.state = ScTrmState_Complete_Error;
+        return ScTrmResult_Error;
+    }
+    return ScTrmResult_Ongoing;
+}
+
+static ScTrmResult_t ScTrmFunc_GetConfirmation_Recovery_GetCapability( ScTrmStateObject_t* state )
+{
+    DEFINE_CALL_BUFFERS;
+    UINT32 result = TPM_RC_SUCCESS;
+
+    UNMARSHAL_RSP(TPM2_GetCapability);
+
+    if (state->intern.urchin.out.getCapability.capabilityData.capability != TPM_CAP_HANDLES) {
+        result = TPM_RC_VALUE;
+        goto Cleanup;
+    }
+
+    if (state->intern.urchin.out.getCapability.capabilityData.data.handles.count > 0) {
+        INITIALIZE_CALL_BUFFERS(TPM2_FlushContext, &state->intern.urchin.in.flushContext, &state->intern.urchin.out.flushContext);
+        state->intern.urchin.parms.objectTableIn[TPM2_FlushContext_HdlIn_FlushHandle].obj.handle = state->intern.urchin.out.getCapability.capabilityData.data.handles.handle[0];
+        MARSHAL_CMD(TPM2_FlushContext);
+
+        state->intern.state = ScTrmState_GetConfirmation_Recovery_FlushHandle;
+    }
+    else {
+        state->intern.state = ScTrmState_None;
+        return ScTrmFunc_GetConfirmation_None(state);
+    }
+
+Cleanup:
+    if (result != TPM_RC_SUCCESS)
+    {
+        ScTrmFunc_MyBreakPointHere();
+        state->intern.state = ScTrmState_Complete_Error;
+        return ScTrmResult_Error;
+    }
+    return ScTrmResult_Ongoing;
+}
+
 static ScTrmResult_t ScTrmFunc_GetConfirmation_StartSeededSession(ScTrmStateObject_t* state)
 {
     DEFINE_CALL_BUFFERS;
@@ -148,6 +230,9 @@ static ScTrmResult_t ScTrmFunc_GetConfirmation_StartSeededSession(ScTrmStateObje
 Cleanup:
     if (result != TPM_RC_SUCCESS)
     {
+        if (result == TPM_RC_SESSION_MEMORY) {
+            return ScTrmFunc_GetConfirmation_StartRecovery( state );
+        }
         ScTrmFunc_MyBreakPointHere();
         state->intern.state = ScTrmState_Complete_Error;
         return ScTrmResult_Error;
@@ -497,9 +582,6 @@ Cleanup:
     return state->intern.result;
 }
 
-#ifndef USE_OPTEE
-__declspec(dllexport) 
-#endif
 ScTrmResult_t ScTrmGetConfirmation(ScTrmStateObject_t* state)
 {
     _cpri__RngStartup();
@@ -560,6 +642,14 @@ ScTrmResult_t ScTrmGetConfirmation(ScTrmStateObject_t* state)
         case ScTrmState_GetConfirmation_ClearDisplay:
         {
             return ScTrmFunc_GetConfirmation_ClearDisplay(state);
+        }
+        case ScTrmState_GetConfirmation_Recovery_GetCapability:
+        {
+            return ScTrmFunc_GetConfirmation_Recovery_GetCapability(state);
+        }
+        case ScTrmState_GetConfirmation_Recovery_FlushHandle:
+        {
+            return ScTrmFunc_GetConfirmation_Recovery_FlushHandle(state);
         }
         case ScTrmState_Complete_Error:
         default:
