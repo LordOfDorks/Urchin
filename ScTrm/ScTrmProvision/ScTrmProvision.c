@@ -233,7 +233,6 @@ InitializeNvSpace(
 
     TRY_TPM_CALL_CTX(cb, FALSE, TPM2_NV_ReadPublic);
     if (result != TPM_RC_SUCCESS) {
-        printf("Define display space.\n");
         cb->sessionTable[0].handle = TPM_RS_PW;
         INITIALIZE_CALL_BUFFERS_CTX(cb, TPM2_NV_DefineSpace, &ctx->in.nvDefineSpace, &ctx->out.nvDefineSpace);
         cb->parms.objectTableIn[TPM2_NV_DefineSpace_HdlIn_AuthHandle].nv.handle = TPM_RH_OWNER;
@@ -247,13 +246,11 @@ InitializeNvSpace(
         ctx->in.nvDefineSpace.publicInfo.t.nvPublic.dataSize = Size;
         EXECUTE_TPM_CALL_CTX(cb, FALSE, TPM2_NV_DefineSpace);
 
-        printf("Read preliminary NV name.\n");
         INITIALIZE_CALL_BUFFERS_CTX(cb, TPM2_NV_ReadPublic, &ctx->in.nvReadPublic, &ctx->out.nvReadPublic);
         cb->parms.objectTableIn[TPM2_NV_ReadPublic_HdlIn_NvIndex] = *NvObject;
         EXECUTE_TPM_CALL_CTX(cb, FALSE, TPM2_NV_ReadPublic);
         *NvObject = cb->parms.objectTableIn[TPM2_NV_ReadPublic_HdlIn_NvIndex];
 
-        printf("Initialize index.\n");
         cb->sessionTable[0].handle = TPM_RS_PW;
         INITIALIZE_CALL_BUFFERS_CTX(cb, TPM2_NV_Write, &ctx->in.nvWrite, &ctx->out.nvWrite);
         cb->parms.objectTableIn[TPM2_NV_Write_HdlIn_AuthHandle] = *NvObject;
@@ -262,7 +259,6 @@ InitializeNvSpace(
         ctx->in.nvWrite.data.t.size = 0;
         EXECUTE_TPM_CALL_CTX(cb, FALSE, TPM2_NV_Write);
 
-        printf("Read NV name.\n");
         INITIALIZE_CALL_BUFFERS_CTX(cb, TPM2_NV_ReadPublic, &ctx->in.nvReadPublic, &ctx->out.nvReadPublic);
         cb->parms.objectTableIn[TPM2_NV_ReadPublic_HdlIn_NvIndex] = *NvObject;
         EXECUTE_TPM_CALL_CTX(cb, FALSE, TPM2_NV_ReadPublic);
