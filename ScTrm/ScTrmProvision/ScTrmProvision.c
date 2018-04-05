@@ -2,12 +2,14 @@
 //
 
 #include "stdafx.h"
+#include "Cmdline.h"
+#include "Interface.h"
 
 const char dispAuth[] = "SecretDisplayAuthorization";
 const char fpReaderAuth[] = "SecretFPReaderAuthorization";
 const char fpManageAuth[] = "SecretFPManageAuthorization";
 
-
+// todo: move to a common header
 #define ESC_FONT_BLACK      "\x1B[30m"
 #define ESC_FONT_BLUE       "\x1B[31m"
 #define ESC_FONT_RED        "\x1B[32m"
@@ -64,6 +66,8 @@ typedef struct _SCTRM_CTX
     URCHIN_CALLBUFFERS cb;
 
     ANY_OBJECT displayObject;
+    ANY_OBJECT fpReaderObject;
+
 } SCTRM_CTX;
 
 #ifdef USE_VCOM
@@ -87,90 +91,6 @@ void TPMVComTeardown(void);
 #define PlatformSubmitTPM20Command WinPlatformSubmitTPM20Command
 
 #endif  // USE_VCOM
-
-#define SW_COM_PORT          "VCom"
-#define SW_COM_PORT_INFO     "COM port connected to the secure display. e.g. \"COM6\""
-#define SW_FORCE             "Force"
-#define SW_FORCE_INFO        "Hard reset the TPM, recreated all keys."
-#define IS_SWITCH(_s)   ((*(_s) == L'/') || (*(_s) == L'-'))
-
-BOOLEAN
-IsSwitchActive(
-    _In_ LONG argc,
-    _In_reads_( argc ) LPWSTR argv[],
-    _In_z_ PWSTR SwitchSel
-)
-
-/*++
-
-Routine Description:
-
-    Helper. Checks if a switch is on.
-
---*/
-
-{
-
-    for (INT i = 1; i < argc; i++) {
-        if (IS_SWITCH( argv[i] ) &&
-            (_wcsicmp( argv[i] + 1, SwitchSel ) == 0)) {
-            return TRUE;
-        }
-    }
-
-    return FALSE;
-}
-
-DWORD
-GetSwitchWithValue(
-    _In_ LONG argc,
-    _In_reads_( argc ) LPSTR argv[],
-    _In_z_ PSTR SwitchSel,
-    _Out_ PSTR *Value
-)
-
-/*++
-
-Routine Description:
-
-    Helper. Checks the argument list for a given switch.
-
---*/
-
-{
-
-    for (INT i = 1; i < argc; i++) {
-
-        if (IS_SWITCH( argv[i] )) {
-
-            if (_stricmp( argv[i] + 1, SwitchSel ) == 0) {
-                if ((i + 1) == argc) {
-                    break;
-                }
-
-                *Value = argv[i + 1];
-                return ERROR_SUCCESS;
-            }
-        }
-    }
-
-    *Value = NULL;
-    return ERROR_INVALID_PARAMETER;
-}
-
-VOID
-PrintUsage(
-    _In_ LONG argc,
-    _In_reads_( argc ) LPWSTR argv[]
-)
-{
-    wprintf_s( L"Usage:  %s ", argv[0]);
-    wprintf_s(L" (optional) /%s <COM> (optional) /%s\n",
-              SW_COM_PORT, SW_FORCE);
-    wprintf_s(L"\t\t%s\t%s\n", SW_COM_PORT, SW_COM_PORT_INFO);
-    wprintf_s(L"\t\t%s\t%s\n", SW_FORCE, SW_FORCE_INFO);
-    wprintf_s( L"\n");
-}
 
 static UINT32
 WinPlatformSubmitTPM20Command(
@@ -213,7 +133,10 @@ WinPlatformSubmitTPM20Command(
     return (UINT32)result;
 }
 
-BOOL GetLockoutAuth(TPM2B_AUTH* lockout)
+BOOL
+GetLockoutAuth(
+    TPM2B_AUTH* lockout
+)
 {
     WCHAR authValue[255] = L"";
     DWORD authValueSize = sizeof(authValue);
@@ -229,12 +152,37 @@ BOOL GetLockoutAuth(TPM2B_AUTH* lockout)
     return TRUE;
 }
 
-int WriteToDisplay(SCTRM_CTX *ctx, char* msg )
+int
+WriteToDisplay(
+    SCTRM_CTX *ctx,
+    char* msgFmt,
+    ...
+)
 {
+    char *string = NULL;
+    int allocSize;
+    va_list argList;
     UINT32 result = TPM_RC_SUCCESS;
     NV_Write_In *nvWriteIn = &ctx->in.nvWrite;
     URCHIN_CALLBUFFERS *cb = &ctx->cb;
 
+    // Format the string if we have one.
+    // A null string instructs the display to clear.
+    if (msgFmt != NULL) {
+        va_start( argList, msgFmt );
+        allocSize = vsnprintf( NULL, 0, msgFmt, argList ) + 1;
+
+        string = malloc( allocSize );
+        if (string == NULL) {
+            goto Cleanup;
+        }
+        ZeroMemory( string, allocSize );
+
+        vsnprintf( string, allocSize, msgFmt, argList );
+        va_end( argList );
+    }
+
+    // NV Write
     cb->sessionTable[0].handle = TPM_RS_PW;
     INITIALIZE_CALL_BUFFERS_CTX(cb, TPM2_NV_Write, nvWriteIn, &ctx->out.nvWrite);
     cb->parms.objectTableIn[TPM2_NV_Write_HdlIn_AuthHandle] = ctx->displayObject;;
@@ -242,10 +190,9 @@ int WriteToDisplay(SCTRM_CTX *ctx, char* msg )
     nvWriteIn->offset = 0;
     nvWriteIn->data.t.size = 0;
 
-    if (msg != NULL)
-    {
-        nvWriteIn->data.t.size = (UINT16)(strlen(msg) + 1);
-        strcpy_s((char*)nvWriteIn->data.t.buffer, sizeof(nvWriteIn->data.t.buffer), msg);
+    if (string != NULL) {
+        nvWriteIn->data.t.size = allocSize;
+        strcpy_s((char*)nvWriteIn->data.t.buffer, sizeof(nvWriteIn->data.t.buffer), string);
     }
 
     EXECUTE_TPM_CALL_CTX(cb, FALSE, TPM2_NV_Write);
@@ -256,67 +203,73 @@ Cleanup:
         printf("Last command failed, status %d (0x%x)\n", result, result);
     }
 
+    if (string != NULL) {
+        free( string );
+    }
+
     return 0;
 }
 
-
 int
-InitializeNvDisplay( SCTRM_CTX *ctx,
-                     const char *Auth )
+InitializeNvSpace( 
+    SCTRM_CTX *ctx,
+    const char *Auth,
+    ANY_OBJECT *NvObject,
+    unsigned int NvIndex,
+    unsigned int Size,
+    BOOLEAN *Created
+)
 {
     UINT32 result = TPM_RC_SUCCESS;
     URCHIN_CALLBUFFERS *cb = &ctx->cb;
-    NV_DefineSpace_In *nvDefineSpaceIn = &ctx->in.nvDefineSpace;
-    NV_Write_In *nvWriteIn = &ctx->in.nvWrite;
-    ANY_OBJECT *DisplayObj = &ctx->displayObject;
 
-    DisplayObj->nv.handle = FP_DISPLAY_INDEX;
-    DisplayObj->nv.authValue.t.size = (UINT16)strlen(Auth);
-    strcpy_s((char*)DisplayObj->nv.authValue.t.buffer, sizeof(DisplayObj->nv.authValue.t.buffer), Auth);
+    *Created = FALSE;
+    NvObject->nv.handle = NvIndex;
+    NvObject->nv.authValue.t.size = (UINT16)strlen(Auth);
+    strcpy_s((char*)NvObject->nv.authValue.t.buffer, sizeof(NvObject->nv.authValue.t.buffer), Auth);
 
-    printf("Read NV name for display.\n");
     INITIALIZE_CALL_BUFFERS_CTX(cb, TPM2_NV_ReadPublic, &ctx->in.nvReadPublic, &ctx->in.nvReadPublic);
-    cb->parms.objectTableIn[TPM2_NV_ReadPublic_HdlIn_NvIndex] = *DisplayObj;
+    cb->parms.objectTableIn[TPM2_NV_ReadPublic_HdlIn_NvIndex] = *NvObject;
 
     TRY_TPM_CALL_CTX(cb, FALSE, TPM2_NV_ReadPublic);
-    if (result != TPM_RC_SUCCESS)
-    {
+    if (result != TPM_RC_SUCCESS) {
         printf("Define display space.\n");
         cb->sessionTable[0].handle = TPM_RS_PW;
-        INITIALIZE_CALL_BUFFERS_CTX(cb, TPM2_NV_DefineSpace, nvDefineSpaceIn, &ctx->out.nvDefineSpace);
+        INITIALIZE_CALL_BUFFERS_CTX(cb, TPM2_NV_DefineSpace, &ctx->in.nvDefineSpace, &ctx->out.nvDefineSpace);
         cb->parms.objectTableIn[TPM2_NV_DefineSpace_HdlIn_AuthHandle].nv.handle = TPM_RH_OWNER;
-        nvDefineSpaceIn->auth = DisplayObj->nv.authValue;
-        nvDefineSpaceIn->publicInfo.t.nvPublic.nvIndex = DisplayObj->nv.handle;
-        nvDefineSpaceIn->publicInfo.t.nvPublic.nameAlg = TPM_ALG_SHA256;
-        nvDefineSpaceIn->publicInfo.t.nvPublic.attributes.TPMA_NV_AUTHREAD = SET;
-        nvDefineSpaceIn->publicInfo.t.nvPublic.attributes.TPMA_NV_AUTHWRITE = SET;
-        nvDefineSpaceIn->publicInfo.t.nvPublic.attributes.TPMA_NV_NO_DA = SET;
-        nvDefineSpaceIn->publicInfo.t.nvPublic.authPolicy.t.size = 0;
-        nvDefineSpaceIn->publicInfo.t.nvPublic.dataSize = FP_TEMPLATE_SIZE;
+        ctx->in.nvDefineSpace.auth = NvObject->nv.authValue;
+        ctx->in.nvDefineSpace.publicInfo.t.nvPublic.nvIndex = NvObject->nv.handle;
+        ctx->in.nvDefineSpace.publicInfo.t.nvPublic.nameAlg = TPM_ALG_SHA256;
+        ctx->in.nvDefineSpace.publicInfo.t.nvPublic.attributes.TPMA_NV_AUTHREAD = SET;
+        ctx->in.nvDefineSpace.publicInfo.t.nvPublic.attributes.TPMA_NV_AUTHWRITE = SET;
+        ctx->in.nvDefineSpace.publicInfo.t.nvPublic.attributes.TPMA_NV_NO_DA = SET;
+        ctx->in.nvDefineSpace.publicInfo.t.nvPublic.authPolicy.t.size = 0;
+        ctx->in.nvDefineSpace.publicInfo.t.nvPublic.dataSize = Size;
         EXECUTE_TPM_CALL_CTX(cb, FALSE, TPM2_NV_DefineSpace);
 
         printf("Read preliminary NV name.\n");
         INITIALIZE_CALL_BUFFERS_CTX(cb, TPM2_NV_ReadPublic, &ctx->in.nvReadPublic, &ctx->out.nvReadPublic);
-        cb->parms.objectTableIn[TPM2_NV_ReadPublic_HdlIn_NvIndex] = *DisplayObj;
+        cb->parms.objectTableIn[TPM2_NV_ReadPublic_HdlIn_NvIndex] = *NvObject;
         EXECUTE_TPM_CALL_CTX(cb, FALSE, TPM2_NV_ReadPublic);
-        *DisplayObj = cb->parms.objectTableIn[TPM2_NV_ReadPublic_HdlIn_NvIndex];
+        *NvObject = cb->parms.objectTableIn[TPM2_NV_ReadPublic_HdlIn_NvIndex];
 
         printf("Initialize index.\n");
         cb->sessionTable[0].handle = TPM_RS_PW;
-        INITIALIZE_CALL_BUFFERS_CTX(cb, TPM2_NV_Write, nvWriteIn, &ctx->out.nvWrite);
-        cb->parms.objectTableIn[TPM2_NV_Write_HdlIn_AuthHandle] = *DisplayObj;
-        cb->parms.objectTableIn[TPM2_NV_Write_HdlIn_NvIndex] = *DisplayObj;
-        nvWriteIn->offset = 0;
-        nvWriteIn->data.t.size = 0;
+        INITIALIZE_CALL_BUFFERS_CTX(cb, TPM2_NV_Write, &ctx->in.nvWrite, &ctx->out.nvWrite);
+        cb->parms.objectTableIn[TPM2_NV_Write_HdlIn_AuthHandle] = *NvObject;
+        cb->parms.objectTableIn[TPM2_NV_Write_HdlIn_NvIndex] = *NvObject;
+        ctx->in.nvWrite.offset = 0;
+        ctx->in.nvWrite.data.t.size = 0;
         EXECUTE_TPM_CALL_CTX(cb, FALSE, TPM2_NV_Write);
 
         printf("Read NV name.\n");
         INITIALIZE_CALL_BUFFERS_CTX(cb, TPM2_NV_ReadPublic, &ctx->in.nvReadPublic, &ctx->out.nvReadPublic);
-        cb->parms.objectTableIn[TPM2_NV_ReadPublic_HdlIn_NvIndex] = *DisplayObj;
+        cb->parms.objectTableIn[TPM2_NV_ReadPublic_HdlIn_NvIndex] = *NvObject;
         EXECUTE_TPM_CALL_CTX(cb, FALSE, TPM2_NV_ReadPublic);
+        *Created = TRUE;
     }
 
-    *DisplayObj = cb->parms.objectTableIn[TPM2_NV_ReadPublic_HdlIn_NvIndex];
+    *NvObject = cb->parms.objectTableIn[TPM2_NV_ReadPublic_HdlIn_NvIndex];
 
 Cleanup:
 
@@ -328,7 +281,27 @@ Cleanup:
 }
 
 int
-ClearTPM( SCTRM_CTX *ctx )
+InitializeNvDisplay(
+    SCTRM_CTX *ctx 
+)
+{
+    BOOLEAN created;
+    return InitializeNvSpace( ctx, dispAuth, &ctx->displayObject, FP_DISPLAY_INDEX, FP_TEMPLATE_SIZE, &created );
+}
+
+int
+InitializeFBReader(
+    SCTRM_CTX *ctx
+)
+{
+    BOOLEAN created;
+    return InitializeNvSpace( ctx, fpReaderAuth, &ctx->fpReaderObject, FP_AUTHORIZE_INDEX, FP_TEMPLATE_SIZE, &created );
+}
+
+int
+ClearTPM(
+    SCTRM_CTX *ctx
+)
 {
     UINT32 result = TPM_RC_SUCCESS;
     URCHIN_CALLBUFFERS *cb = &ctx->cb;
@@ -340,14 +313,13 @@ ClearTPM( SCTRM_CTX *ctx )
     cb->buffer = lockout.entity.name.t.name;
     cb->size = sizeof(lockout.entity.name.t.name);
     lockout.entity.name.t.size = TPM_HANDLE_Marshal(&lockout.entity.handle, &cb->buffer, &cb->size);
-    if (!GetLockoutAuth(&lockoutAuth))
-    {
+    if (!GetLockoutAuth(&lockoutAuth)) {
         printf("Reading lockoutAuth from Registry failed.\n");
         goto Cleanup;
     }
     lockout.entity.authValue = lockoutAuth;
 
-    WriteToDisplay( &ctx, "Clearing the TPM\n" );
+    WriteToDisplay( ctx, "Clearing the TPM\n" );
 
     printf("Clear the TPM.\n");
     cb->sessionTable[0].handle = TPM_RS_PW;
@@ -367,7 +339,7 @@ ClearTPM( SCTRM_CTX *ctx )
     lockout.entity.authValue = lockoutAuth;
 
     // Create the SRK
-    WriteToDisplay( &ctx, "Creating SRK\n" );
+    WriteToDisplay( ctx, "Creating SRK\n" );
     printf("Create the new SRK.\n");
     cb->sessionTable[0].handle = TPM_RS_PW;
     INITIALIZE_CALL_BUFFERS_CTX(cb, TPM2_CreatePrimary, &ctx->in.createPrimary, &ctx->out.createPrimary);
@@ -394,37 +366,210 @@ Cleanup:
     return result;
 }
 
+BOOLEAN
+ValidateFB(
+    SCTRM_CTX *ctx,
+    unsigned int *slotID
+)
+{ 
+    UINT32 result = TPM_RC_SUCCESS;
+    URCHIN_CALLBUFFERS *cb = &ctx->cb;
+    BOOLEAN valid = FALSE;
 
-// /Enroll
-// /Test [1]
-// /Clear
-// /ReadEK
+    WriteToDisplay(ctx, "\nIdentifying finger\n");
+
+    cb->sessionTable[0].handle = TPM_RS_PW;
+    INITIALIZE_CALL_BUFFERS_CTX(cb, TPM2_NV_Read, &ctx->in.nvRead, &ctx->out.nvRead);
+    cb->parms.objectTableIn[TPM2_NV_Write_HdlIn_AuthHandle] = ctx->fpReaderObject;
+    cb->parms.objectTableIn[TPM2_NV_Write_HdlIn_NvIndex] = ctx->fpReaderObject;
+    ctx->in.nvRead.offset = 0;
+    ctx->in.nvRead.size = sizeof(unsigned int);
+    TRY_TPM_CALL_CTX(cb, FALSE, TPM2_NV_Read);
+    if (result == TPM_RC_SUCCESS)
+    {
+        int slot = *((int*)ctx->out.nvRead.data.t.buffer);
+        if ((slot >= 0) && (slot <= 199))
+        {
+            printf( "Match slot[%u].\n", slot );
+            valid = TRUE;
+            *slotID = slot;
+        }
+        else if (slot == -1) printf("Unmatched.\n");
+        else printf( "Error.\n" );
+    }
+    else if (result != TPM_RC_CANCELED)
+    {
+        printf("Reader error.\n");
+    }
+    else if (result == TPM_RC_CANCELED)
+    {
+        printf("Canceled.\n");
+    }
+
+    WriteToDisplay(ctx, NULL);
+
+    return valid;
+}
+
+int
+ReadEK(
+    SCTRM_CTX *ctx
+)
+{
+    UINT32 result = TPM_RC_SUCCESS;
+    URCHIN_CALLBUFFERS *cb = &ctx->cb;
+    ANY_OBJECT ekObject = { 0 };
+
+    // First make sure that the EK is present
+    INITIALIZE_CALL_BUFFERS_CTX(cb, TPM2_ReadPublic, &ctx->in.readPublic, &ctx->out.readPublic);
+    cb->parms.objectTableIn[TPM2_ReadPublic_HdlIn_PublicKey].obj.handle = TPM_20_EK_HANDLE;
+    TRY_TPM_CALL_CTX(cb, FALSE, TPM2_ReadPublic);
+    if (result != TPM_RC_SUCCESS) {
+        // No, create and install it.
+        printf("EK not found.\n");
+        WriteToDisplay( ctx, "Creating EK...\n" );
+        cb->sessionTable[0].handle = TPM_RS_PW;
+        INITIALIZE_CALL_BUFFERS_CTX(cb, TPM2_CreatePrimary, &ctx->in.createPrimary, &ctx->out.createPrimary);
+        cb->parms.objectTableIn[TPM2_CreatePrimary_HdlIn_PrimaryHandle].entity.handle = TPM_RH_ENDORSEMENT;
+        SetEkTemplate(&ctx->in.createPrimary.inPublic);
+        EXECUTE_TPM_CALL_CTX(cb, FALSE, TPM2_CreatePrimary);
+        ekObject = cb->parms.objectTableOut[TPM2_CreatePrimary_HdlOut_ObjectHandle];
+
+        // Install the EK in NV.
+        printf("Install the EK under TPM_20_EK_HANDLE.\n");
+        cb->sessionTable[0].handle = TPM_RS_PW;
+        INITIALIZE_CALL_BUFFERS_CTX(cb, TPM2_EvictControl, &ctx->in.evictControl, &ctx->out.evictControl);
+        cb->parms.objectTableIn[TPM2_EvictControl_HdlIn_Auth].entity.handle = TPM_RH_OWNER;
+        cb->parms.objectTableIn[TPM2_EvictControl_HdlIn_ObjectHandle] = ekObject;
+        ctx->in.evictControl.persistentHandle = TPM_20_EK_HANDLE;
+        EXECUTE_TPM_CALL_CTX(cb, FALSE, TPM2_EvictControl);
+
+        // Read the new public.
+        printf("Read EKpub.\n");
+        INITIALIZE_CALL_BUFFERS_CTX(cb, TPM2_ReadPublic, &ctx->in.readPublic, &ctx->in.readPublic);
+        cb->parms.objectTableIn[TPM2_ReadPublic_HdlIn_PublicKey].generic.handle = TPM_20_EK_HANDLE;
+        EXECUTE_TPM_CALL_CTX(cb, FALSE, TPM2_ReadPublic);
+    }
+    ekObject = cb->parms.objectTableIn[TPM2_ReadPublic_HdlIn_PublicKey];
+
+    printf( "-- Device Info ---------------------------------------\n" );
+    printf("char dispAuth[%d]        = \"%s\";\n", sizeof(dispAuth), dispAuth);
+    printf("char fpReaderAuth[%d]    = \"%s\";\n", sizeof(fpReaderAuth), fpReaderAuth);
+    printf("char fpManageAuth[%d]    = \"%s\";\n", sizeof(fpManageAuth), fpManageAuth);
+    printf("unsigned char ekName[%u] = {", ekObject.obj.name.t.size);
+    for (UINT32 n = 0; n < ekObject.obj.name.t.size; n++) {
+        if (n > 0) printf(", ");
+        if ((n % 16) == 0) printf("\n");
+        printf("0x%02x", ekObject.obj.name.t.name[n]);
+    }
+    printf("\n};\n");
+    printf( "-------------------------------------------------------\n" );
+
+Cleanup:
+
+    if (result != TPM_RC_SUCCESS) {
+        printf("Last command failed, status %d (0x%x)\n", result, result);
+    }
+
+    return result;
+}
+
+int
+GetSlot(
+    SCTRM_CTX *ctx,
+    ANY_OBJECT *fpManageObject,
+    unsigned int slotID
+)
+{
+    BOOLEAN created = FALSE;
+    return InitializeNvSpace( ctx, fpManageAuth, fpManageObject, NV_FPBASE_INDEX + slotID, FP_TEMPLATE_SIZE, &created );
+}
+
+int
+FindEmpptySlot(
+    SCTRM_CTX *ctx,
+    ANY_OBJECT *fpManageObject,
+    unsigned int *slotID
+)
+{
+    UINT32 result = TPM_RC_SUCCESS;
+    ANY_OBJECT localObj = { 0 };
+    unsigned int localID = -1;
+    BOOLEAN created = FALSE;
+
+    for (unsigned int n = 0; n < FP_SLOTS; n++) {
+        result = InitializeNvSpace( ctx, fpManageAuth, &localObj, NV_FPBASE_INDEX + n, FP_TEMPLATE_SIZE, &created );
+        if (result != TPM_RC_SUCCESS) {
+            goto Cleanup;
+        }
+
+        if (created) {
+            // TODO: || "Slot exits"
+            // By either fixing read template, or add additional FP_VALIDATE_TEMPLATE command.
+            localID = n;
+            break;
+        }
+        ZeroMemory( &localObj, sizeof( localObj ) );
+    }
+
+    if (localID == -1) {
+        result = TPM_RC_INSUFFICIENT;
+        goto Cleanup;
+    }
+
+    *fpManageObject = localObj;
+    if (slotID != NULL) {
+        *slotID = localID;
+    }
+
+Cleanup:
+
+    return result;
+}
+
+int
+SendFPCommand(
+    SCTRM_CTX *ctx,
+    ANY_OBJECT *fpObject,
+    BYTE CmdByte
+)
+{
+    UINT32 result = TPM_RC_SUCCESS;
+    URCHIN_CALLBUFFERS *cb = &ctx->cb;
+
+    if (fpObject->nv.handle == 0) {
+        result = TPM_RC_BAD_AUTH;
+        goto Cleanup;
+    }
+
+    cb->sessionTable[0].handle = TPM_RS_PW;
+    INITIALIZE_CALL_BUFFERS_CTX(cb, TPM2_NV_Write, &ctx->in.nvWrite, &ctx->out.nvWrite);
+    cb->parms.objectTableIn[TPM2_NV_Write_HdlIn_AuthHandle] = *fpObject;
+    cb->parms.objectTableIn[TPM2_NV_Write_HdlIn_NvIndex] = *fpObject;
+    ctx->in.nvWrite.offset = 0;
+    ctx->in.nvWrite.data.t.size = sizeof(unsigned char);
+    ctx->in.nvWrite.data.t.buffer[0] = CmdByte;
+    EXECUTE_TPM_CALL_CTX(cb, FALSE, TPM2_NV_Write);
+
+Cleanup:
+
+    if (result != TPM_RC_SUCCESS) {
+        printf("Last command failed, status %d (0x%x)\n", result, result);
+    }
+
+    return result;
+}
 
 int main(int argc, char *argv[])
 {
-    DEFINE_CALL_BUFFERS;
-    TPM_IN in;
-    TPM_OUT out;
     SCTRM_CTX ctx;
-    MemorySet(&ctx, 0x00, sizeof(SCTRM_CTX));
-
     UINT32 result = TPM_RC_SUCCESS;
+    unsigned int slot = 0xFFFF;
+    ANY_OBJECT fbObj = { 0 };
+    CMD_PARAM cmd = { 0 };
+    //unsigned char templateTable[FP_SLOTS][FP_TEMPLATE_SIZE] = { 0 };
 
-    ANY_OBJECT ekObject = { 0 };
-    ANY_OBJECT fpManageObject[FP_SLOTS] = { 0 };
-    ANY_OBJECT fpReaderObject = { 0 };
-    unsigned char templateTable[FP_SLOTS][FP_TEMPLATE_SIZE] = { 0 };
-    unsigned int ident = 0;
-    PSTR vComPort = NULL;
-    BOOLEAN force = FALSE;
-
-    if ((argc > 1) &&
-        (GetSwitchWithValue( argc, argv, SW_COM_PORT, &vComPort ) != ERROR_SUCCESS) &&
-        ((force = IsSwitchActive(argc, argv, SW_FORCE)) == FALSE))
-    {
-        PrintUsage(argc, argv);
-        return;
-    }
+    ZeroMemory(&ctx, sizeof(SCTRM_CTX));
 
     // Prepare Urchin
     _cpri__RngStartup();
@@ -432,216 +577,112 @@ int main(int argc, char *argv[])
     _cpri__RsaStartup();
     _cpri__SymStartup();
 
+    // Parse all cmd line options.
+    if (GetCmdlineParams(argc, argv, &cmd) != 0) {
+        return;
+    }
+
 #ifdef USE_VCOM
-    TPMVComStartup(vComPort);
+    printf("Connecting to TPM on %s\n", cmd.vComPort == NULL ? DEFAULT_VCOM_PORT : cmd.vComPort );
+    TPMVComStartup(cmd.vComPort);
 #endif
 
-    // Display initialization
-    if ((result = InitializeNvDisplay( &ctx, dispAuth )) != TPM_RC_SUCCESS)
-    {
+    printf("Initializing NV space...\n");
+    if (((result = InitializeNvDisplay( &ctx )) != TPM_RC_SUCCESS) ||
+        ((result = InitializeFBReader( &ctx )) != TPM_RC_SUCCESS)) {
         goto Cleanup;
     }
 
-    // Clear the TPM if in FORCE mode
-    if (force)
-    {
-        ClearTPM( &ctx );
-    }
-
-    // First make sure that the EK is present
-    printf("Read EKpub.\n");
-    INITIALIZE_CALL_BUFFERS(TPM2_ReadPublic, &in.readPublic, &out.readPublic);
-    parms.objectTableIn[TPM2_ReadPublic_HdlIn_PublicKey].obj.handle = TPM_20_EK_HANDLE;
-    TRY_TPM_CALL(FALSE, TPM2_ReadPublic);
-    if (result != TPM_RC_SUCCESS)
-    {
-        // No, create and install it.
-        printf("Not found. Create EK.\n");
-        WriteToDisplay( &ctx, "Creating EK...\n" );
-        sessionTable[0].handle = TPM_RS_PW;
-        INITIALIZE_CALL_BUFFERS(TPM2_CreatePrimary, &in.createPrimary, &out.createPrimary);
-        parms.objectTableIn[TPM2_CreatePrimary_HdlIn_PrimaryHandle].entity.handle = TPM_RH_ENDORSEMENT;
-        SetEkTemplate(&in.createPrimary.inPublic);
-        EXECUTE_TPM_CALL(FALSE, TPM2_CreatePrimary);
-        ekObject = parms.objectTableOut[TPM2_CreatePrimary_HdlOut_ObjectHandle];
-
-        // Install the EK in NV.
-        printf("Install the EK under TPM_20_EK_HANDLE.\n");
-        sessionTable[0].handle = TPM_RS_PW;
-        INITIALIZE_CALL_BUFFERS(TPM2_EvictControl, &in.evictControl, &out.evictControl);
-        parms.objectTableIn[TPM2_EvictControl_HdlIn_Auth].entity.handle = TPM_RH_OWNER;
-        parms.objectTableIn[TPM2_EvictControl_HdlIn_ObjectHandle] = ekObject;
-        in.evictControl.persistentHandle = TPM_20_EK_HANDLE;
-        EXECUTE_TPM_CALL(FALSE, TPM2_EvictControl);
-
-        // Read the new public.
-        printf("Read EKpub.\n");
-        INITIALIZE_CALL_BUFFERS(TPM2_ReadPublic, &in.readPublic, &in.readPublic);
-        parms.objectTableIn[TPM2_ReadPublic_HdlIn_PublicKey].generic.handle = TPM_20_EK_HANDLE;
-        EXECUTE_TPM_CALL(FALSE, TPM2_ReadPublic);
-    }
-    ekObject = parms.objectTableIn[TPM2_ReadPublic_HdlIn_PublicKey];
-    
-    for (unsigned int n = 0; n < FP_SLOTS; n++)
-    {
-        fpManageObject[n].nv.handle = NV_FPBASE_INDEX + n;
-        fpManageObject[n].nv.authValue.t.size = (UINT16)strlen(fpManageAuth);
-        strcpy_s((char*)fpManageObject[n].nv.authValue.t.buffer, sizeof(fpManageObject[n].nv.authValue.t.buffer), fpManageAuth);
-
-        printf("Read NV name for slot[%u].\n", n);
-        INITIALIZE_CALL_BUFFERS(TPM2_NV_ReadPublic, &in.nvReadPublic, &out.nvReadPublic);
-        parms.objectTableIn[TPM2_NV_ReadPublic_HdlIn_NvIndex] = fpManageObject[n];
-        TRY_TPM_CALL(FALSE, TPM2_NV_ReadPublic);
-        if (result != TPM_RC_SUCCESS)
-        {
-            printf("Define FP manage space for slot[%u].\n", n);
-            sessionTable[0].handle = TPM_RS_PW;
-            INITIALIZE_CALL_BUFFERS(TPM2_NV_DefineSpace, &in.nvDefineSpace, &out.nvDefineSpace);
-            parms.objectTableIn[TPM2_NV_DefineSpace_HdlIn_AuthHandle].nv.handle = TPM_RH_OWNER;
-            in.nvDefineSpace.auth = fpManageObject[n].nv.authValue;
-            in.nvDefineSpace.publicInfo.t.nvPublic.nvIndex = fpManageObject[n].nv.handle;
-            in.nvDefineSpace.publicInfo.t.nvPublic.nameAlg = TPM_ALG_SHA256;
-            in.nvDefineSpace.publicInfo.t.nvPublic.attributes.TPMA_NV_AUTHREAD = SET;
-            in.nvDefineSpace.publicInfo.t.nvPublic.attributes.TPMA_NV_AUTHWRITE = SET;
-            in.nvDefineSpace.publicInfo.t.nvPublic.attributes.TPMA_NV_NO_DA = SET;
-            in.nvDefineSpace.publicInfo.t.nvPublic.authPolicy.t.size = 0;
-            in.nvDefineSpace.publicInfo.t.nvPublic.dataSize = FP_TEMPLATE_SIZE;
-            EXECUTE_TPM_CALL(FALSE, TPM2_NV_DefineSpace);
-
-            printf("Read preliminary NV name for slot[%u].\n", n);
-            INITIALIZE_CALL_BUFFERS(TPM2_NV_ReadPublic, &in.nvReadPublic, &out.nvReadPublic);
-            parms.objectTableIn[TPM2_NV_ReadPublic_HdlIn_NvIndex] = fpManageObject[n];
-            EXECUTE_TPM_CALL(FALSE, TPM2_NV_ReadPublic);
-            fpManageObject[n] = parms.objectTableIn[TPM2_NV_ReadPublic_HdlIn_NvIndex];
-
-            printf("Initialize index for slot[%u].\n", n);
-            sessionTable[0].handle = TPM_RS_PW;
-            INITIALIZE_CALL_BUFFERS(TPM2_NV_Write, &in.nvWrite, &out.nvWrite);
-            parms.objectTableIn[TPM2_NV_Write_HdlIn_AuthHandle] = fpManageObject[n];
-            parms.objectTableIn[TPM2_NV_Write_HdlIn_NvIndex] = fpManageObject[n];
-            in.nvWrite.offset = 0;
-            in.nvWrite.data.t.size = sizeof(unsigned char);
-            in.nvWrite.data.t.buffer[0] = FP_SLOT_INITIALIZE_TEMPLATE;
-            EXECUTE_TPM_CALL(FALSE, TPM2_NV_Write);
-
-            printf("Read NV name for slot[%u].\n", n);
-            INITIALIZE_CALL_BUFFERS(TPM2_NV_ReadPublic, &in.nvReadPublic, &out.nvReadPublic);
-            parms.objectTableIn[TPM2_NV_ReadPublic_HdlIn_NvIndex] = fpManageObject[n];
-            EXECUTE_TPM_CALL(FALSE, TPM2_NV_ReadPublic);
+    if (cmd.force) {
+        printf("FORCE clearing the TPM.\n");
+        if ((result = ClearTPM( &ctx )) != TPM_RC_SUCCESS) {
+            printf("Failed to clear the TPM.\n");
         }
-        fpManageObject[n] = parms.objectTableIn[TPM2_NV_ReadPublic_HdlIn_NvIndex];
     }
 
-    fpReaderObject.nv.handle = FP_AUTHORIZE_INDEX;
-    fpReaderObject.nv.authValue.t.size = (UINT16)strlen(fpReaderAuth);
-    strcpy_s((char*)fpReaderObject.nv.authValue.t.buffer, sizeof(fpReaderObject.nv.authValue.t.buffer), fpReaderAuth);
-
-    printf("Read NV name for fpReader.\n");
-    INITIALIZE_CALL_BUFFERS(TPM2_NV_ReadPublic, &in.nvReadPublic, &out.nvReadPublic);
-    parms.objectTableIn[TPM2_NV_ReadPublic_HdlIn_NvIndex] = fpReaderObject;
-    TRY_TPM_CALL(FALSE, TPM2_NV_ReadPublic);
-    if (result != TPM_RC_SUCCESS)
-    {
-        printf("Define FP reader space.\n");
-        sessionTable[0].handle = TPM_RS_PW;
-        INITIALIZE_CALL_BUFFERS(TPM2_NV_DefineSpace, &in.nvDefineSpace, &out.nvDefineSpace);
-        parms.objectTableIn[TPM2_NV_DefineSpace_HdlIn_AuthHandle].nv.handle = TPM_RH_OWNER;
-        in.nvDefineSpace.auth = fpReaderObject.nv.authValue;
-        in.nvDefineSpace.publicInfo.t.nvPublic.nvIndex = fpReaderObject.nv.handle;
-        in.nvDefineSpace.publicInfo.t.nvPublic.nameAlg = TPM_ALG_SHA256;
-        in.nvDefineSpace.publicInfo.t.nvPublic.attributes.TPMA_NV_AUTHREAD = SET;
-        in.nvDefineSpace.publicInfo.t.nvPublic.attributes.TPMA_NV_AUTHWRITE = SET;
-        in.nvDefineSpace.publicInfo.t.nvPublic.attributes.TPMA_NV_NO_DA = SET;
-        in.nvDefineSpace.publicInfo.t.nvPublic.authPolicy.t.size = 0;
-        in.nvDefineSpace.publicInfo.t.nvPublic.dataSize = FP_TEMPLATE_SIZE;
-        EXECUTE_TPM_CALL(FALSE, TPM2_NV_DefineSpace);
-
-        printf("Read preliminary NV name.\n");
-        INITIALIZE_CALL_BUFFERS(TPM2_NV_ReadPublic, &in.nvReadPublic, &out.nvReadPublic);
-        parms.objectTableIn[TPM2_NV_ReadPublic_HdlIn_NvIndex] = fpReaderObject;
-        EXECUTE_TPM_CALL(FALSE, TPM2_NV_ReadPublic);
-        fpReaderObject = parms.objectTableIn[TPM2_NV_ReadPublic_HdlIn_NvIndex];
-
-        printf("Initialize index.\n");
-        sessionTable[0].handle = TPM_RS_PW;
-        INITIALIZE_CALL_BUFFERS(TPM2_NV_Write, &in.nvWrite, &out.nvWrite);
-        parms.objectTableIn[TPM2_NV_Write_HdlIn_AuthHandle] = fpReaderObject;
-        parms.objectTableIn[TPM2_NV_Write_HdlIn_NvIndex] = fpReaderObject;
-        in.nvWrite.offset = 0;
-        in.nvWrite.data.t.size = sizeof(unsigned int);
-        in.nvWrite.data.t.buffer[0] = FP_AUTHORIZE_INITIALIZE;
-        EXECUTE_TPM_CALL(FALSE, TPM2_NV_Write);
-
-        printf("Read NV name.\n");
-        INITIALIZE_CALL_BUFFERS(TPM2_NV_ReadPublic, &in.nvReadPublic, &out.nvReadPublic);
-        parms.objectTableIn[TPM2_NV_ReadPublic_HdlIn_NvIndex] = fpReaderObject;
-        EXECUTE_TPM_CALL(FALSE, TPM2_NV_ReadPublic);
+    // Reading the EK will create one if needed.
+    if (cmd.readEK) {
+        printf("Read EKpub.\n");
+        if((result = ReadEK( &ctx )) != TPM_RC_SUCCESS)
+        {
+            printf( "Failed to read the EK. Terminating.\n" );
+            goto Cleanup;
+        }
     }
-    fpReaderObject = parms.objectTableIn[TPM2_NV_ReadPublic_HdlIn_NvIndex];
 
-    // Empty the fingerprint reader template database
-    printf("Empty the FP reader database.\n");
-    sessionTable[0].handle = TPM_RS_PW;
-    INITIALIZE_CALL_BUFFERS(TPM2_NV_Write, &in.nvWrite, &out.nvWrite);
-    parms.objectTableIn[TPM2_NV_Write_HdlIn_AuthHandle] = fpManageObject[0];
-    parms.objectTableIn[TPM2_NV_Write_HdlIn_NvIndex] = fpManageObject[0];
-    in.nvWrite.offset = 0;
-    in.nvWrite.data.t.size = sizeof(unsigned char);
-    in.nvWrite.data.t.buffer[0] = FP_SLOT_DELETE_ALL_TEMPLATE;
-    EXECUTE_TPM_CALL(FALSE, TPM2_NV_Write);
+    if (cmd.clear) {
+        if (cmd.clearSlot == CLEAR_ALL_SLOTS) {
 
-    WriteToDisplay(&ctx, NULL);
+            printf( "Clearing all Slots.\n" );
 
+            if (((result = GetSlot( &ctx, &fbObj, 0 )) != TPM_RC_SUCCESS) ||
+                ((result = SendFPCommand( &ctx, &fbObj, FP_SLOT_DELETE_ALL_TEMPLATE )) != TPM_RC_SUCCESS)) {
+                printf( "Failed to clear all slots.\n" );
+                goto Cleanup;
+            }
+        }
+        else {
+            printf( "Clearing slot %d.\n", cmd.clearSlot );
 
-        char enrollMsg[128];
-        sprintf_s( enrollMsg, sizeof( enrollMsg ), "%s%s\nRed on Blue\n%s%sBlack on Magenta\n",
-                   ESC_FONT_BGR_BLUE, ESC_FONT_RED, ESC_FONT_BGR_MAGENTA, ESC_FONT_BLACK);
+            if (((result = GetSlot( &ctx, &fbObj, cmd.clearSlot )) != TPM_RC_SUCCESS) ||
+                ((result = SendFPCommand( &ctx, &fbObj, FP_SLOT_DELETE_TEMPLATE )) != TPM_RC_SUCCESS)) {
+                printf( "Failed to clear slot.\n" );
+                goto Cleanup;
+            }
+        }
+    }
 
-        WriteToDisplay(&ctx, enrollMsg);
+    if (cmd.enroll) {
+        printf("Enrolling finger. Scan finger three times.\n");
 
-        Sleep( 5000 );
+        result = GetSlot(&ctx, &fbObj, cmd.enrollSlot);
+        if (result != TPM_RC_SUCCESS) {
+            printf( "Failed to open slot %d.\n", cmd.enrollSlot );
+            goto Cleanup;
+        }
 
-        WriteToDisplay(&ctx, NULL);
+        WriteToDisplay(&ctx, "\nEnroll finger in slot[%u]\n", cmd.enrollSlot );
 
-        sprintf_s( enrollMsg, sizeof( enrollMsg ), "%s%s\nWhite on Yellow\n",
-                   ESC_FONT_BGR_WHITE, ESC_FONT_YELLOW);
+        result = SendFPCommand( &ctx, &fbObj, FP_SLOT_ENROLL_TEMPLATE);
+        if (result != TPM_RC_SUCCESS) {
+            printf( "Failed to enroll slot %d.\n", cmd.enrollSlot );
+            goto Cleanup;
+        }
 
-        sessionTable[0].handle = TPM_RS_PW;
-        INITIALIZE_CALL_BUFFERS(TPM2_NV_Write, &in.nvWrite, &out.nvWrite);
-        parms.objectTableIn[TPM2_NV_Write_HdlIn_AuthHandle] = ctx.displayObject;
-        parms.objectTableIn[TPM2_NV_Write_HdlIn_NvIndex] = ctx.displayObject;
-        in.nvWrite.offset = 0;
-        in.nvWrite.data.t.size = (UINT16)(strlen(enrollMsg) + 1);
-        strcpy_s((char*)in.nvWrite.data.t.buffer, sizeof(in.nvWrite.data.t.buffer), enrollMsg);
-        EXECUTE_TPM_CALL(FALSE, TPM2_NV_Write);
+        CLEAR_DISPLAY;
 
-        Sleep( 5000 );
+        if (!ValidateFB( &ctx, &slot )) {
 
-    for (unsigned int n = 0; n < FP_SLOTS; n++)
-    {
-        char enrollMsg[128];
-        sprintf_s(enrollMsg, sizeof(enrollMsg), "\nEnroll finger in slot[%u]\n", n);
-        WriteToDisplay(&ctx, enrollMsg );
+            printf("Validation failed!\n");
+            WriteToDisplay(&ctx, "\n%sError. Enroll failed.\n", ESC_FONT_RED);
+            goto Cleanup;
 
-        printf("Enroll slot[%u].\n", n);
-        sessionTable[0].handle = TPM_RS_PW;
-        INITIALIZE_CALL_BUFFERS(TPM2_NV_Write, &in.nvWrite, &out.nvWrite);
-        parms.objectTableIn[TPM2_NV_Write_HdlIn_AuthHandle] = fpManageObject[n];
-        parms.objectTableIn[TPM2_NV_Write_HdlIn_NvIndex] = fpManageObject[n];
-        in.nvWrite.offset = 0;
-        in.nvWrite.data.t.size = sizeof(unsigned char);
-        in.nvWrite.data.t.buffer[0] = FP_SLOT_ENROLL_TEMPLATE;
-        EXECUTE_TPM_CALL(FALSE, TPM2_NV_Write);
+        }else if (slot != cmd.enrollSlot) {
 
-        printf("Wipe enroll message %u.\n", n);
-        sessionTable[0].handle = TPM_RS_PW;
-        INITIALIZE_CALL_BUFFERS(TPM2_NV_Write, &in.nvWrite, &out.nvWrite);
-        parms.objectTableIn[TPM2_NV_Write_HdlIn_AuthHandle] = ctx.displayObject;
-        parms.objectTableIn[TPM2_NV_Write_HdlIn_NvIndex] = ctx.displayObject;
-        in.nvWrite.offset = 0;
-        in.nvWrite.data.t.size = 0;
-        EXECUTE_TPM_CALL(FALSE, TPM2_NV_Write);
+            printf("Validation failed! Slot %d reported. Expected %d\n", slot, cmd.enrollSlot);
+            WriteToDisplay(&ctx, "\n%sError. Enroll failed.\n", ESC_FONT_RED);
+            goto Cleanup;
+        }
+        else {
+            WriteToDisplay(&ctx, "\n%sSuccess. slot[%d] enrolled.\n", ESC_FONT_GREEN, cmd.enrollSlot);
+        }
 
+        Sleep( 1000 );
+    }
+
+    if (cmd.test) {
+
+        printf( "Validating finger is enrolled..\n" );
+        if (!ValidateFB( &ctx, &slot)) {
+            printf( "Error: Failed to validate finger.\n" );
+        }
+        else {
+            printf( "Validation succeeded. Fingerprint is enrolled in slot %d.\n", slot );
+            WriteToDisplay(&ctx, "\n%sSuccess. slot[%d] enrolled.\n", ESC_FONT_GREEN, cmd.enrollSlot);
+        }
+    }
+
+    // TODO: Fix reading/writing templates
         //printf("Read template from slot[%u].\n", n);
         //sessionTable[0].handle = TPM_RS_PW;
         //INITIALIZE_CALL_BUFFERS(TPM2_NV_Read, &in.nvRead, &out.nvRead);
@@ -662,79 +703,12 @@ int main(int argc, char *argv[])
         //memcpy(in.nvWrite.data.t.buffer, templateTable[n], in.nvWrite.data.t.size);
         //EXECUTE_TPM_CALL(FALSE, TPM2_NV_Write);
 
-        Sleep(1000);
-    }
-
-    Sleep(3000);
-    BOOL done = FALSE;
-    do
-    {
-        char identifyMsg[128];
-        sprintf_s(identifyMsg, sizeof(identifyMsg), "Identifying finger %u\n", ident++);
-
-        printf("Show identify message.\n");
-        sessionTable[0].handle = TPM_RS_PW;
-        INITIALIZE_CALL_BUFFERS(TPM2_NV_Write, &in.nvWrite, &out.nvWrite);
-        parms.objectTableIn[TPM2_NV_Write_HdlIn_AuthHandle] = ctx.displayObject;
-        parms.objectTableIn[TPM2_NV_Write_HdlIn_NvIndex] = ctx.displayObject;
-        in.nvWrite.offset = 0;
-        in.nvWrite.data.t.size = (UINT16)(strlen(identifyMsg) + 1);
-        strcpy_s((char*)in.nvWrite.data.t.buffer, sizeof(in.nvWrite.data.t.buffer), identifyMsg);
-        EXECUTE_TPM_CALL(FALSE, TPM2_NV_Write);
-
-        printf("Identify finger.\n");
-        sessionTable[0].handle = TPM_RS_PW;
-        INITIALIZE_CALL_BUFFERS(TPM2_NV_Read, &in.nvRead, &out.nvRead);
-        parms.objectTableIn[TPM2_NV_Write_HdlIn_AuthHandle] = fpReaderObject;
-        parms.objectTableIn[TPM2_NV_Write_HdlIn_NvIndex] = fpReaderObject;
-        in.nvRead.offset = 0;
-        in.nvRead.size = sizeof(unsigned int);
-        TRY_TPM_CALL(FALSE, TPM2_NV_Read);
-        if (result == TPM_RC_SUCCESS)
-        {
-            int slot = *((int*)out.nvRead.data.t.buffer);
-            if ((slot >= 0) && (slot <= 199)) printf("Match slot[%u].\n", slot);
-            else if (slot == -1) printf("Unmatched.\n");
-            else printf("Error.\n");
-        }
-        else if (result != TPM_RC_CANCELED)
-        {
-            printf("Reader error.\n");
-        }
-        else if (result == TPM_RC_CANCELED)
-        {
-            printf("Canceled.\n");
-            done = TRUE;
-        }
-
-        printf("Wipe identify message.\n");
-        sessionTable[0].handle = TPM_RS_PW;
-        INITIALIZE_CALL_BUFFERS(TPM2_NV_Write, &in.nvWrite, &out.nvWrite);
-        parms.objectTableIn[TPM2_NV_Write_HdlIn_AuthHandle] = ctx.displayObject;
-        parms.objectTableIn[TPM2_NV_Write_HdlIn_NvIndex] = ctx.displayObject;
-        in.nvWrite.offset = 0;
-        in.nvWrite.data.t.size = 0;
-        EXECUTE_TPM_CALL(FALSE, TPM2_NV_Write);
-
-        if (!done)
-        {
-            Sleep(3000);
-        }
-    } while (!done);
-
-    printf("char dispAuth[%d]        = \"%s\";\n", sizeof(dispAuth), dispAuth);
-    printf("char fpReaderAuth[%d]    = \"%s\";\n", sizeof(fpReaderAuth), fpReaderAuth);
-    printf("char fpManageAuth[%d]    = \"%s\";\n", sizeof(fpManageAuth), fpManageAuth);
-    printf("unsigned char ekName[%u] = {", ekObject.obj.name.t.size);
-    for (UINT32 n = 0; n < ekObject.obj.name.t.size; n++)
-    {
-        if (n > 0) printf(", ");
-        if ((n % 16) == 0) printf("\n");
-        printf("0x%02x", ekObject.obj.name.t.name[n]);
-    }
-    printf("\n};\n");
+    printf( "Complete.\n" );
 
 Cleanup:
+
+    CLEAR_DISPLAY;
+
 #ifdef USE_VCOM
     TPMVComShutdown();
 #endif

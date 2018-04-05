@@ -4,6 +4,7 @@
 extern "C"
 {
 #endif
+#define DEFAULT_VCOM_PORT "COM6"
 
 #ifdef USE_TPM_SIMULATOR
 // Linked Simulator Hookup
