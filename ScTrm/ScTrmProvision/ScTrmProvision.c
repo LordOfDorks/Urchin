@@ -4,6 +4,7 @@
 #include "stdafx.h"
 #include "Cmdline.h"
 #include "TrScTrmLib.h"
+#include "Windows.h"
 #include "Interface.h"
 
 const char dispAuth[] = "SecretDisplayAuthorization";
@@ -28,6 +29,16 @@ const char fpManageAuth[] = "SecretFPManageAuthorization";
 #define ESC_FONT_BGR_MAGENTA    "\x1B[45m"
 #define ESC_FONT_BGR_YELLOW     "\x1B[46m"
 #define ESC_FONT_BGR_WHITE      "\x1B[47m"
+// Font Size
+#define FONT_SIZE_1       "\x1B[51m"
+#define FONT_SIZE_2       "\x1B[52m"
+#define FONT_SIZE_3       "\x1B[53m"
+#define FONT_SIZE_4       "\x1B[54m"
+#define FONT_SIZE_5       "\x1B[55m"
+#define FONT_SIZE_6       "\x1B[56m"
+#define FONT_SIZE_7       "\x1B[57m"
+#define FONT_SIZE_8       "\x1B[58m"
+#define FONT_SIZE_9       "\x1B[59m"
 
 #define CLEAR_DISPLAY WriteToDisplay(&ctx, NULL);
 
@@ -573,12 +584,36 @@ Cleanup:
     return result;
 }
 
+ScTrmStateObject_t secState = { 0 };
+
 int
-RunConfirmation(SCTRM_CTX *ctx, const char* message)
+RunConfirmation(
+    SCTRM_CTX *ctx,
+    char* msgFmt,
+    ...
+)
 {
      // Secure side: variables
     ScTrmResult_t secReturn = ScTrmResult_Ongoing;
-    ScTrmStateObject_t secState = { 0 };
+    char* message = NULL;
+    int allocSize;
+    va_list argList;
+
+    // Format the string if we have one.
+    // A null string instructs the display to clear.
+    if (msgFmt != NULL) {
+        va_start( argList, msgFmt );
+        allocSize = vsnprintf( NULL, 0, msgFmt, argList ) + 1;
+
+        message = malloc( allocSize );
+        if (message == NULL) {
+            goto Cleanup;
+        }
+        ZeroMemory( message, allocSize );
+
+        vsnprintf( message, allocSize, msgFmt, argList );
+        va_end( argList );
+    }
 
     // Secure side: Fill out the parameters for the call
     secState.param.func.GetConfirmation.displayAuth.t.size = (UINT16)strlen(dispAuth); // Display authorization
@@ -630,6 +665,12 @@ RunConfirmation(SCTRM_CTX *ctx, const char* message)
     else
     {
         printf( "Error occurred.\n" );
+    }
+
+Cleanup:
+
+    if (message != NULL) {
+        free( message );
     }
 
     return secReturn;
@@ -781,11 +822,11 @@ int main(int argc, char *argv[])
 
         Sleep( 1000 );
     }
-
+    
     while (cmd.test > 0) {
         int rSlot;
         printf( "Running Confirmation\n" );
-        rSlot = RunConfirmation( &ctx, "\nPlease Authorize XYZ." );
+        rSlot = RunConfirmation( &ctx, "\nPlease Authorize\n\n%s   XYZ", FONT_SIZE_5);
         if (rSlot > 199 || rSlot < 0) {
             printf( "Error: Failed to validate finger.\n" );
         }
