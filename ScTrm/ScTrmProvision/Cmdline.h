@@ -10,7 +10,7 @@ typedef struct _CMD_PARAM
     PSTR ekFilePath;
     BOOLEAN enroll;
     unsigned int enrollSlot;
-    BOOLEAN test;
+    unsigned int test;
     BOOLEAN clear;
     unsigned int clearSlot;
 } CMD_PARAM;

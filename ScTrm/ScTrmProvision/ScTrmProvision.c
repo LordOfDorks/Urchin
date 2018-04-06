@@ -782,7 +782,7 @@ int main(int argc, char *argv[])
         Sleep( 1000 );
     }
 
-    if (cmd.test) {
+    while (cmd.test > 0) {
         int rSlot;
         printf( "Running Confirmation\n" );
         rSlot = RunConfirmation( &ctx, "\nPlease Authorize XYZ." );
@@ -793,6 +793,7 @@ int main(int argc, char *argv[])
             printf( "Validation succeeded. Fingerprint is enrolled in slot %d.\n", rSlot );
             WriteToDisplay(&ctx, "\n%sSuccess. slot[%d] enrolled.\n", ESC_FONT_GREEN, rSlot);
         }
+        cmd.test--;
     }
 
     // TODO: Fix reading/writing templates

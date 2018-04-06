@@ -12,7 +12,7 @@
 #define SW_ENROLL            "Enroll"
 #define SW_ENROLL_INFO       "Enrolls a new fingerprint in the given slot # (max 200)."
 #define SW_VALIDATE_FP       "Test"
-#define SW_VALIDATE_FP_INFO  "Validates a specific fingerprint is enrolled"
+#define SW_VALIDATE_FP_INFO  "Validates a specific fingerprint is enrolled. Will repeat <num> times"
 #define SW_CLEAR_FP          "Clear"
 #define SW_CLEAR_FP_INFO     "Clear slot #. If no number provided, clear all enrolled fingerprint templates."
 #define IS_SWITCH(_s)   ((*(_s) == '/') || (*(_s) == '-'))
@@ -25,13 +25,13 @@ PrintUsage(
 )
 {
     printf_s( "\nUsage:  %s ", argv[0]);
-    printf_s( "  [/%s <COM>] [/%s <Path>] [/%s <slot#>] [/%s <slot#>] [/%s] [/%s] \n\n",
-              SW_COM_PORT, SW_ENROLL, SW_CLEAR_FP, SW_VALIDATE_FP, SW_FORCE, SW_READ_EK);
+    printf_s( "  [/%s <COM>] [/%s <Path>] [/%s <slot#>] [/%s <slot#>] [/%s <num>] [/%s] \n\n",
+              SW_COM_PORT, SW_READ_EK, SW_ENROLL, SW_CLEAR_FP, SW_VALIDATE_FP, SW_FORCE);
     printf_s( "    /%s <COM>\t\t- %s\n", SW_COM_PORT, SW_COM_PORT_INFO);
     printf_s( "    /%s <Path>\t- %s\n", SW_READ_EK, SW_READ_EK_INFO);
     printf_s( "    /%s <slot#>\t- %s\n", SW_ENROLL, SW_ENROLL_INFO);
     printf_s( "    /%s <slot#>\t- %s\n", SW_CLEAR_FP, SW_CLEAR_FP_INFO);
-    printf_s( "    /%s\t\t- %s\n", SW_VALIDATE_FP, SW_VALIDATE_FP_INFO);
+    printf_s( "    /%s <num>\t\t- %s\n", SW_VALIDATE_FP, SW_VALIDATE_FP_INFO);
     printf_s( "    /%s\t\t- %s\n", SW_FORCE, SW_FORCE_INFO);
     printf_s( "\n");
 }
@@ -153,6 +153,11 @@ Routine Description:
                     break;
                 }
 
+                // switch, not a value
+                if (IS_SWITCH( argv[i + 1] )) {
+                    return ERROR_INVALID_PARAMETER;
+                }
+
                 *Value = atoi(argv[i + 1]);
                 return ERROR_SUCCESS;
             }
@@ -184,7 +189,7 @@ GetCmdlineParams(
     param->force = IsSwitchActive( argc, argv, SW_FORCE );
     param->readEK = IsSwitchActive( argc, argv, SW_READ_EK );
     param->enroll = IsSwitchActive( argc, argv, SW_ENROLL );
-    param->test = IsSwitchActive( argc, argv, SW_VALIDATE_FP );
+    param->test = (IsSwitchActive( argc, argv, SW_VALIDATE_FP ) == TRUE) ? 1 : 0;
     param->clear = IsSwitchActive( argc, argv, SW_CLEAR_FP );
 
     GetSwitchWithValue( argc, argv, SW_COM_PORT, &param->vComPort );
@@ -208,6 +213,13 @@ GetCmdlineParams(
     if (param->readEK) {
         // Optional
         GetSwitchWithValue( argc, argv, SW_READ_EK, &param->ekFilePath );
+    }
+
+    if (param->test == 1) {
+        // Optional
+        if (GetSwitchWithIntValue( argc, argv, SW_VALIDATE_FP, &param->test ) != ERROR_SUCCESS) {
+            param->test = 1;
+        }
     }
 
     if (param->test) {
