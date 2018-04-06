@@ -198,7 +198,7 @@ unsigned int OpenTpmConnection(char * comPort)
 
 UINT32 TPMVComSubmitCommand(
     BOOL CloseContext,
-    CONST BYTE* pbCommand,
+    const BYTE* pbCommand,
     UINT32 cbCommand,
     BYTE* pbResponse,
     UINT32 cbResponse,
