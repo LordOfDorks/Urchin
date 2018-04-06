@@ -410,6 +410,52 @@ ValidateFB(
 }
 
 int
+DumpBufferToFile(
+    char * filePath,
+    UINT16 size,
+    BYTE *buffer
+)
+{
+    HANDLE file;
+    DWORD result;
+    BOOL success;
+    DWORD written;
+
+    file = CreateFileA( filePath,
+                        GENERIC_READ | GENERIC_WRITE,
+                        FILE_SHARE_DELETE | FILE_SHARE_READ | FILE_SHARE_WRITE,
+                        NULL,
+                        CREATE_ALWAYS,
+                        FILE_ATTRIBUTE_NORMAL,
+                        NULL );
+
+    if (file == INVALID_HANDLE_VALUE) {
+        result = GetLastError();
+        printf("ERROR: Failed to write file. 0x%08x\n", result);
+        goto Cleanup;
+    }
+
+    success = WriteFile( file,
+                         buffer,
+                         size,
+                         &written,
+                         NULL );
+
+    if (!success)
+    {
+        result = GetLastError();
+        printf("ERROR: Failed to write file. 0x%08x\n", result);
+        goto Cleanup;
+    }
+
+    result = ERROR_SUCCESS;
+
+Cleanup:
+
+    return result;
+}
+
+int
 ReadEK(
     SCTRM_CTX *ctx
 )
@@ -668,6 +714,11 @@ int main(int argc, char *argv[])
         {
             printf( "Failed to read the EK. Terminating.\n" );
             goto Cleanup;
+        }
+
+        if (cmd.ekFilePath != NULL) {
+            printf( "Dumping EK name to: %s\n", cmd.ekFilePath );
+            DumpBufferToFile( cmd.ekFilePath, ctx.ekObject.obj.name.t.size, ctx.ekObject.obj.name.t.name );
         }
     }
 

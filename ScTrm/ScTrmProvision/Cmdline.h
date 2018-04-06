@@ -7,6 +7,7 @@ typedef struct _CMD_PARAM
     PSTR vComPort;
     BOOLEAN force;
     BOOLEAN readEK;
+    PSTR ekFilePath;
     BOOLEAN enroll;
     unsigned int enrollSlot;
     BOOLEAN test;

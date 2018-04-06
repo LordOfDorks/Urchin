@@ -7,7 +7,8 @@
 #define SW_FORCE             "Force"
 #define SW_FORCE_INFO        "Hard reset the TPM, recreated all keys."
 #define SW_READ_EK           "ReadEK"
-#define SW_READ_EK_INFO      "Reads (and creates if missing) the EK and prints it to the screen."
+#define SW_READ_EK_INFO      "Reads (and creates if missing) the EK and prints it to the screen.\n" \
+                              "\t\t\t  Specify <Path> to dump the contents to a file."
 #define SW_ENROLL            "Enroll"
 #define SW_ENROLL_INFO       "Enrolls a new fingerprint in the given slot # (max 200)."
 #define SW_VALIDATE_FP       "Test"
@@ -24,14 +25,14 @@ PrintUsage(
 )
 {
     printf_s( "\nUsage:  %s ", argv[0]);
-    printf_s( "  [/%s <COM>] [/%s <slot#>] [/%s <slot#>] [/%s] [/%s] [/%s]\n\n",
+    printf_s( "  [/%s <COM>] [/%s <Path>] [/%s <slot#>] [/%s <slot#>] [/%s] [/%s] \n\n",
               SW_COM_PORT, SW_ENROLL, SW_CLEAR_FP, SW_VALIDATE_FP, SW_FORCE, SW_READ_EK);
     printf_s( "    /%s <COM>\t\t- %s\n", SW_COM_PORT, SW_COM_PORT_INFO);
+    printf_s( "    /%s <Path>\t- %s\n", SW_READ_EK, SW_READ_EK_INFO);
     printf_s( "    /%s <slot#>\t- %s\n", SW_ENROLL, SW_ENROLL_INFO);
     printf_s( "    /%s <slot#>\t- %s\n", SW_CLEAR_FP, SW_CLEAR_FP_INFO);
     printf_s( "    /%s\t\t- %s\n", SW_VALIDATE_FP, SW_VALIDATE_FP_INFO);
     printf_s( "    /%s\t\t- %s\n", SW_FORCE, SW_FORCE_INFO);
-    printf_s( "    /%s\t\t- %s\n", SW_READ_EK, SW_READ_EK_INFO);
     printf_s( "\n");
 }
 
@@ -109,6 +110,11 @@ Routine Description:
             if (_stricmp( argv[i] + 1, SwitchSel ) == 0) {
                 if ((i + 1) == argc) {
                     break;
+                }
+
+                // switch, not a value
+                if (IS_SWITCH( argv[i + 1] )) {
+                    return ERROR_INVALID_PARAMETER;
                 }
 
                 *Value = argv[i + 1];
@@ -197,6 +203,11 @@ GetCmdlineParams(
         {
             param->clearSlot = CLEAR_ALL_SLOTS;
         }
+    }
+
+    if (param->readEK) {
+        // Optional
+        GetSwitchWithValue( argc, argv, SW_READ_EK, &param->ekFilePath );
     }
 
     if (param->test) {
