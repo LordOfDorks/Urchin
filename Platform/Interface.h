@@ -24,7 +24,7 @@ void TPMSimTeardown(void);
 BOOL TPMVComStartup();
 UINT32 TPMVComSubmitCommand(
     BOOL CloseContext,
-    BYTE* pbCommand,
+    CONST BYTE* pbCommand,
     UINT32 cbCommand,
     BYTE* pbResponse,
     UINT32 cbResponse,

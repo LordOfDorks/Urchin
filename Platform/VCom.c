@@ -154,7 +154,7 @@ Cleanup:
 }
 
 BYTE* GenerateTpmCommandPayload(unsigned int locality,
-    BYTE* cmd,
+    CONST BYTE* cmd,
     UINT32 cmdSize,
     unsigned int* dataInSize
 )
@@ -198,7 +198,7 @@ unsigned int OpenTpmConnection(char * comPort)
 
 UINT32 TPMVComSubmitCommand(
     BOOL CloseContext,
-    BYTE* pbCommand,
+    CONST BYTE* pbCommand,
     UINT32 cbCommand,
     BYTE* pbResponse,
     UINT32 cbResponse,
