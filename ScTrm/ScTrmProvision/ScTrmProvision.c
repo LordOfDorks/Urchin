@@ -40,6 +40,8 @@ const char fpManageAuth[] = "SecretFPManageAuthorization";
 #define FONT_SIZE_8       "\x1B[58m"
 #define FONT_SIZE_9       "\x1B[59m"
 
+#define ASCII_DEGREE       "\xF8"
+
 #define CLEAR_DISPLAY WriteToDisplay(&ctx, NULL);
 
 TBS_HCONTEXT g_hTbs = NULL;
@@ -629,9 +631,11 @@ RunConfirmation(
     strcpy_s((char*)secState.param.func.GetConfirmation.displayMessage.t.buffer,
         sizeof(secState.param.func.GetConfirmation.displayMessage.t.buffer),
         message);
-    //secState.param.func.GetConfirmation.ekName.t.size = ctx->ekObject.obj.name.t.size; // Expected EK to ensure we are talking to the right device
+    secState.param.func.GetConfirmation.ekName.t.size = ctx->ekObject.obj.name.t.size; // Expected EK to ensure we are talking to the right device
     memcpy(&secState.param.func.GetConfirmation.ekName, &ctx->ekObject.obj.name, sizeof(ctx->ekObject.obj.name));
     secState.param.func.GetConfirmation.timeout = 20 * 1000; // 20 second timeout to wait for a fingerprint
+
+    secState.param.func.GetConfirmation.verifyEk = true;
 
     do
     {
@@ -822,18 +826,26 @@ int main(int argc, char *argv[])
 
         Sleep( 1000 );
     }
-    
+
     while (cmd.test > 0) {
         int rSlot;
         printf( "Running Confirmation\n" );
-        rSlot = RunConfirmation( &ctx, "\nPlease Authorize\n\n%s   XYZ", FONT_SIZE_5);
+        rSlot = RunConfirmation( &ctx, "%s\n%s%sOk to set:\n%s\n%s%s Temperature\n\n%s%sTo:\n%s\n%s%s %d\xF8\x43",
+                        FONT_SIZE_1,
+                        ESC_FONT_YELLOW,    FONT_SIZE_3,  // okay to set
+                        FONT_SIZE_1,
+                        ESC_FONT_WHITE,     FONT_SIZE_4, // Temp
+                        ESC_FONT_YELLOW,    FONT_SIZE_3, //to
+                        FONT_SIZE_1,
+                        ESC_FONT_RED,       FONT_SIZE_5, //#
+                        30+cmd.test/*, ASCII_DEGREE*/ );
         if (rSlot > 199 || rSlot < 0) {
             printf( "Error: Failed to validate finger.\n" );
         }
         else {
             printf( "Validation succeeded. Fingerprint is enrolled in slot %d.\n", rSlot );
-            WriteToDisplay(&ctx, "\n%sSuccess. slot[%d] enrolled.\n", ESC_FONT_GREEN, rSlot);
         }
+        CLEAR_DISPLAY;
         cmd.test--;
     }
 

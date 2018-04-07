@@ -88,18 +88,18 @@ static ScTrmResult_t ScTrmFunc_GetConfirmation_GetEkPubUntrusted(ScTrmStateObjec
 
     // Check all the EK properties against the default EK template here. Skip for now.
 
-#if 0
-    // Make sure we are looking at the EK the caller is expecting
-    ObjectComputeName(&state->intern.func.GetConfirmation.ek.obj.publicArea.t.publicArea, &calculatedEkName);
-    if ((state->intern.func.GetConfirmation.ek.obj.name.t.size != calculatedEkName.t.size) ||
-        (memcmp(state->intern.func.GetConfirmation.ek.obj.name.t.name, calculatedEkName.t.name, calculatedEkName.t.size)) ||
-        (state->param.func.GetConfirmation.ekName.t.size != calculatedEkName.t.size) ||
-        (memcmp(state->param.func.GetConfirmation.ekName.t.name, calculatedEkName.t.name, calculatedEkName.t.size)))
-    {
-        result = TPM_RC_FAILURE;
-        goto Cleanup;
+    if (state->param.func.GetConfirmation.verifyEk) {
+        // Make sure we are looking at the EK the caller is expecting
+        ObjectComputeName(&state->intern.func.GetConfirmation.ek.obj.publicArea.t.publicArea, &calculatedEkName);
+        if ((state->intern.func.GetConfirmation.ek.obj.name.t.size != calculatedEkName.t.size) ||
+            (memcmp(state->intern.func.GetConfirmation.ek.obj.name.t.name, calculatedEkName.t.name, calculatedEkName.t.size)) ||
+             (state->param.func.GetConfirmation.ekName.t.size != calculatedEkName.t.size) ||
+             (memcmp(state->param.func.GetConfirmation.ekName.t.name, calculatedEkName.t.name, calculatedEkName.t.size)))
+        {
+            result = TPM_RC_FAILURE;
+            goto Cleanup;
+        }
     }
-#endif
 
     // Start the seeded authorization session
     INITIALIZE_CALL_BUFFERS(TPM2_StartAuthSession, &state->intern.urchin.in.startAuthSession, &state->intern.urchin.out.startAuthSession);
