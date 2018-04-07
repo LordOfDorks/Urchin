@@ -631,6 +631,7 @@ RunConfirmation(
     strcpy_s((char*)secState.param.func.GetConfirmation.displayMessage.t.buffer,
         sizeof(secState.param.func.GetConfirmation.displayMessage.t.buffer),
         message);
+
     secState.param.func.GetConfirmation.ekName.t.size = ctx->ekObject.obj.name.t.size; // Expected EK to ensure we are talking to the right device
     memcpy(&secState.param.func.GetConfirmation.ekName, &ctx->ekObject.obj.name, sizeof(ctx->ekObject.obj.name));
     secState.param.func.GetConfirmation.timeout = 20 * 1000; // 20 second timeout to wait for a fingerprint

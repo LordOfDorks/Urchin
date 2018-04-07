@@ -39,7 +39,7 @@ typedef struct
     TPM2B_AUTH fpReaderAuth;
     TPM2B_AUTH displayAuth;
     UINT32 timeout;
-    bool verifyEk;
+    BOOL verifyEk;
 } GetConfirmation_Param_t;
 
 typedef struct

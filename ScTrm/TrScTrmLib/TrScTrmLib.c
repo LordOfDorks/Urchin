@@ -96,6 +96,7 @@ static ScTrmResult_t ScTrmFunc_GetConfirmation_GetEkPubUntrusted(ScTrmStateObjec
              (state->param.func.GetConfirmation.ekName.t.size != calculatedEkName.t.size) ||
              (memcmp(state->param.func.GetConfirmation.ekName.t.name, calculatedEkName.t.name, calculatedEkName.t.size)))
         {
+            DMSG("ERROR: EK validation failed. Device not authenticated.\n");
             result = TPM_RC_FAILURE;
             goto Cleanup;
         }
