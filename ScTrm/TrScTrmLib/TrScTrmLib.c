@@ -100,6 +100,7 @@ static ScTrmResult_t ScTrmFunc_GetConfirmation_GetEkPubUntrusted(ScTrmStateObjec
             result = TPM_RC_FAILURE;
             goto Cleanup;
         }
+        DMSG( "SCTRM: EK verification succeeded. Safe to continue.\n" );
     }
 
     // Start the seeded authorization session
