@@ -6,7 +6,7 @@
 #endif
 
 HANDLE hVCom = INVALID_HANDLE_VALUE;
-char* vcomPort = "COM5";
+char* vcomPort = DEFAULT_VCOM_PORT;
 unsigned int vcomTimeout = 10 * 60 * 1000;
 
 // Nucleo-L476RC based TPM on USB-VCOM
