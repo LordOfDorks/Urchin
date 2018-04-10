@@ -250,9 +250,13 @@ BOOL TPMVComStartup(void* context)
         vcomPort = (char *)(context);
     }
 
-    return ((TPMVComSubmitCommand(FALSE, startupClear, sizeof(startupClear), response, sizeof(response), &responseSize) == 0 /*TPM_RC_SUCCESS*/) &&
-        (responseSize == sizeof(response)) &&
-        (*((unsigned int*)response) == 0));
+    if (TPMVComSubmitCommand( FALSE, startupClear, sizeof( startupClear ), response, sizeof( response ), &responseSize ) != 0 /*TPM_RC_SUCCESS*/) {
+        return FALSE;
+    }
+
+    // Verify response was 'success' or 'already running'
+    return (responseSize == sizeof(response)) && 
+           (((*((UINT16*)&response[7]) == 0) || (*((UINT16*)&response[7]) == 0x100)));
 }
 
 UINT32 TPMVComShutdown()
@@ -263,5 +267,5 @@ UINT32 TPMVComShutdown()
 
     return ((TPMVComSubmitCommand(TRUE, shutdownClear, sizeof(shutdownClear), response, sizeof(response), &responseSize) == 0 /*TPM_RC_SUCCESS*/) &&
         (responseSize == sizeof(response)) &&
-        (*((unsigned int*)response) == 0));
+        (*((UINT16*)&response[7]) == 0));
 }

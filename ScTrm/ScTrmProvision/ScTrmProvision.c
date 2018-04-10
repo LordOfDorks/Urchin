@@ -737,7 +737,10 @@ int main(int argc, char *argv[])
     }
 #ifdef USE_VCOM
     printf("Connecting to TPM on %s\n", cmd.vComPort == NULL ? DEFAULT_VCOM_PORT : cmd.vComPort );
-    TPMVComStartup(cmd.vComPort);
+    if (!TPMVComStartup( cmd.vComPort )) {
+        printf("Connection failed. Unable to continue.\n" );
+        return;
+    }
 #endif
 
     printf("Initializing NV space...\n");

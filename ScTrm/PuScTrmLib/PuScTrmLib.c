@@ -21,7 +21,7 @@ void TPMVComTeardown(void);
     (TPMVComSubmitCommand(FALSE, ##__VA_ARGS__) == 0x000)
 
 #define PlatformOpenTPM(context) \
-    ((TPMVComStartup(context) == 0) ? 1 : 0)
+    ((TPMVComStartup(context)) ? 1 : 0)
 
 #define PlatformCloseTPM(context) \
     TPMVComShutdown()

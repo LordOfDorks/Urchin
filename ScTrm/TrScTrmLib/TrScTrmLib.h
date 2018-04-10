@@ -38,7 +38,7 @@ typedef struct
     TPM2B_MAX_NV_BUFFER displayMessage;
     TPM2B_AUTH fpReaderAuth;
     TPM2B_AUTH displayAuth;
-    UINT32 timeout;
+    UINT16 timeout;
     BOOL verifyEk;
 } GetConfirmation_Param_t;
 
