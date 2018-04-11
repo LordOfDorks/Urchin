@@ -115,4 +115,5 @@ typedef struct
 } ScTrmStateObject_t;
 #pragma pack(pop)
 
+void ScTrmPrepare(ScTrmStateObject_t* state);
 ScTrmResult_t ScTrmGetConfirmation(ScTrmStateObject_t* state);

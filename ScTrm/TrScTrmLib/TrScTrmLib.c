@@ -662,3 +662,13 @@ ScTrmResult_t ScTrmGetConfirmation(ScTrmStateObject_t* state)
         }
     }
 }
+
+void ScTrmPrepare( ScTrmStateObject_t* state )
+{
+    // If we are not ready to display, reset to a workable starting point.
+    if (state->intern.state != ScTrmState_GetConfirmation_ReadyToDisplay) {
+        state->intern.state = ScTrmState_None;
+    }
+    state->intern.result = ScTrmResult_Ongoing;
+    state->intern.recovery = 0;
+}
