@@ -191,7 +191,6 @@ GetCmdlineParams(
     param->enroll = IsSwitchActive( argc, argv, SW_ENROLL );
     param->test = (IsSwitchActive( argc, argv, SW_VALIDATE_FP ) == TRUE) ? 1 : 0;
     param->clear = IsSwitchActive( argc, argv, SW_CLEAR_FP );
-    param->factoryReset = IsSwitchActive( argc, argv, SW_FACTRESET_FP );
 
     GetSwitchWithValue( argc, argv, SW_COM_PORT, &param->vComPort );
 
