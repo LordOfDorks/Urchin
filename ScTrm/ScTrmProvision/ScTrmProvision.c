@@ -753,7 +753,6 @@ int main(int argc, char *argv[])
         if (_stricmp( prompt, "yes" ) != 0) {
             return;
         }
-        printf( "deleteing!!\n" );
         ClearTPM(&ctx);
         cmd.readEK = true;
     }
