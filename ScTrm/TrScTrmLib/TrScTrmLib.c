@@ -393,8 +393,9 @@ static ScTrmResult_t ScTrmFunc_GetConfirmation_GetNvPublicForFPReader(ScTrmState
     state->intern.urchin.parms.objectTableIn[TPM2_NV_Write_HdlIn_AuthHandle] = state->intern.func.GetConfirmation.nvFPReader;
     state->intern.urchin.parms.objectTableIn[TPM2_NV_Write_HdlIn_NvIndex] = state->intern.func.GetConfirmation.nvFPReader;
     state->intern.urchin.in.nv_Write.offset = 0;
-    state->intern.urchin.in.nv_Write.data.t.size = sizeof(state->param.func.GetConfirmation.timeout);
-    *((unsigned int*)state->intern.urchin.in.nv_Write.data.t.buffer) = state->param.func.GetConfirmation.timeout;
+    state->intern.urchin.in.nv_Write.data.t.size = sizeof(UINT32);
+    *((UINT16*)&state->intern.urchin.in.nv_Write.data.t.buffer[0]) = state->param.func.GetConfirmation.timeout;
+    state->intern.urchin.in.nv_Write.data.t.buffer[3] = FP_AUTHORIZE_TIMEOUT;
     MARSHAL_CMD(TPM2_NV_Write);
 
     state->intern.state++;
@@ -660,4 +661,14 @@ ScTrmResult_t ScTrmGetConfirmation(ScTrmStateObject_t* state)
             return ScTrmResult_Error;
         }
     }
+}
+
+void ScTrmPrepare( ScTrmStateObject_t* state )
+{
+    // If we are not ready to display, reset to a workable starting point.
+    if (state->intern.state != ScTrmState_GetConfirmation_ReadyToDisplay) {
+        state->intern.state = ScTrmState_None;
+    }
+    state->intern.result = ScTrmResult_Ongoing;
+    state->intern.recovery = 0;
 }

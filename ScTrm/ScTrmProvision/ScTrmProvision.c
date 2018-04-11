@@ -324,10 +324,13 @@ ClearTPM(
     cb->buffer = lockout.entity.name.t.name;
     cb->size = sizeof(lockout.entity.name.t.name);
     lockout.entity.name.t.size = TPM_HANDLE_Marshal(&lockout.entity.handle, &cb->buffer, &cb->size);
+    // Lockout value for a VCOM device is not stored in the registry. This will need to be managed another way.
+#ifndef USE_VCOM
     if (!GetLockoutAuth(&lockoutAuth)) {
         printf("Reading lockoutAuth from Registry failed.\n");
         goto Cleanup;
     }
+#endif
     lockout.entity.authValue = lockoutAuth;
 
     WriteToDisplay( ctx, "Clearing the TPM\n" );
@@ -737,20 +740,27 @@ int main(int argc, char *argv[])
     }
 #ifdef USE_VCOM
     printf("Connecting to TPM on %s\n", cmd.vComPort == NULL ? DEFAULT_VCOM_PORT : cmd.vComPort );
-    TPMVComStartup(cmd.vComPort);
+    if (!TPMVComStartup( cmd.vComPort )) {
+        printf("Connection failed. Unable to continue.\n" );
+        return;
+    }
 #endif
+
+    if (cmd.force) {
+        char prompt[20];
+        printf("Factory reset. This will clear the TPM, and will require a new ek be generated.\nAre you sure? (yes/no) ");
+        scanf_s( "%s", prompt, _countof(prompt) );
+        if (_stricmp( prompt, "yes" ) != 0) {
+            return;
+        }
+        ClearTPM(&ctx);
+        cmd.readEK = true;
+    }
 
     printf("Initializing NV space...\n");
     if (((result = InitializeNvDisplay( &ctx )) != TPM_RC_SUCCESS) ||
         ((result = InitializeFBReader( &ctx )) != TPM_RC_SUCCESS)) {
         goto Cleanup;
-    }
-
-    if (cmd.force) {
-        printf("FORCE clearing the TPM.\n");
-        if ((result = ClearTPM( &ctx )) != TPM_RC_SUCCESS) {
-            printf("Failed to clear the TPM.\n");
-        }
     }
 
     // Reading the EK will create one if needed.

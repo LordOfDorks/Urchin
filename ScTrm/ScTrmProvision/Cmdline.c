@@ -4,8 +4,8 @@
 
 #define SW_COM_PORT          "VCom"
 #define SW_COM_PORT_INFO     "COM port connected to the secure display. e.g. \"COM6\""
-#define SW_FORCE             "Force"
-#define SW_FORCE_INFO        "Hard reset the TPM, recreated all keys."
+#define SW_FORCE             "FactoryReset"
+#define SW_FORCE_INFO        "Hard reset the TPM, recreated all keys. This will clear all slots and the EK"
 #define SW_READ_EK           "ReadEK"
 #define SW_READ_EK_INFO      "Reads (and creates if missing) the EK and prints it to the screen.\n" \
                               "\t\t\t  Specify <Path> to dump the contents to a file."
