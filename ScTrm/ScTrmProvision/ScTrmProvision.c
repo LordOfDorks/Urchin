@@ -426,13 +426,143 @@ ValidateFB(
 }
 
 int
+ReadFPTemplate(
+    SCTRM_CTX *ctx,
+    ANY_OBJECT *fpManageObject,
+    unsigned char *templateBuffer,
+    unsigned int templateBufferSize,
+    unsigned int *written
+)
+{
+    UINT32 result = TPM_RC_SUCCESS;
+    URCHIN_CALLBUFFERS *cb = &ctx->cb;
+
+    cb->sessionTable[0].handle = TPM_RS_PW;
+    INITIALIZE_CALL_BUFFERS_CTX(cb, TPM2_NV_Read, &ctx->in.nvRead, &ctx->out.nvRead);
+    cb->parms.objectTableIn[TPM2_NV_Write_HdlIn_AuthHandle] = *fpManageObject;
+    cb->parms.objectTableIn[TPM2_NV_Write_HdlIn_NvIndex] = *fpManageObject;
+    ctx->in.nvRead.offset = 0;
+    ctx->in.nvRead.size = FP_TEMPLATE_SIZE;
+    TRY_TPM_CALL_CTX(cb, FALSE, TPM2_NV_Read);
+    if (result == TPM_RC_SUCCESS)
+    {
+        if (templateBufferSize < ctx->out.nvRead.data.t.size)
+        {
+            printf( "Internal Error. Unexpected template size.\n" );
+            return -1;
+        }
+        memcpy( templateBuffer, ctx->out.nvRead.data.t.buffer, ctx->out.nvRead.data.t.size );
+    }
+
+    *written = ctx->out.nvRead.data.t.size;
+    return result;
+}
+
+int
+WriteFPTemplate(
+    SCTRM_CTX *ctx,
+    ANY_OBJECT *fpManageObject,
+    unsigned char *templateBuffer,
+    unsigned int templateBufferSize
+)
+{
+    UINT32 result = TPM_RC_SUCCESS;
+    URCHIN_CALLBUFFERS *cb = &ctx->cb;
+
+    cb->sessionTable[0].handle = TPM_RS_PW;
+
+    INITIALIZE_CALL_BUFFERS_CTX(cb, TPM2_NV_Write, &ctx->in.nvWrite, &ctx->out.nvWrite);
+    cb->parms.objectTableIn[TPM2_NV_Write_HdlIn_AuthHandle] = *fpManageObject;
+    cb->parms.objectTableIn[TPM2_NV_Write_HdlIn_NvIndex] = *fpManageObject;
+    ctx->in.nvWrite.offset = 0;
+    ctx->in.nvWrite.data.t.size = FP_TEMPLATE_SIZE;
+    memcpy(ctx->in.nvWrite.data.t.buffer, templateBuffer, templateBufferSize);
+    EXECUTE_TPM_CALL_CTX(cb, FALSE, TPM2_NV_Write);
+
+Cleanup:
+
+    if (result != TPM_RC_SUCCESS) {
+        printf("WriteFPTemplate: TPM2_NV_Write command  failed, status %d (0x%x)\n", result, result);
+    }
+
+    return result;
+}
+
+int
+LoadBufferFromFile(
+    char * filePath,
+    UINT16 size,
+    BYTE *buffer
+)
+{
+    HANDLE file = INVALID_HANDLE_VALUE;
+    DWORD result;
+    BOOL success;
+    DWORD read;
+    LARGE_INTEGER sizeOnDisk;
+
+    file = CreateFileA( filePath,
+                        GENERIC_READ,
+                        FILE_SHARE_READ,
+                        NULL,
+                        OPEN_ALWAYS,
+                        FILE_ATTRIBUTE_NORMAL,
+                        NULL );
+
+    if (file == INVALID_HANDLE_VALUE) {
+        result = GetLastError();
+        printf("ERROR: Failed to open file. 0x%08x\n", result);
+        goto Cleanup;
+    }
+
+    if (!GetFileSizeEx( file, &sizeOnDisk ))
+    {
+        result = GetLastError();
+        printf( "ERROR: Failed to read file size. 0x%08x\n", result );
+        goto Cleanup;
+    }
+
+    if ((sizeOnDisk.LowPart > size) ||
+        (sizeOnDisk.HighPart != 0))
+    {
+        result = ERROR_OUTOFMEMORY;
+        printf( "ERROR: Template larger then expected.. 0x%08x\n", result );
+        goto Cleanup;
+    }
+
+    success = ReadFile( file,
+                        buffer,
+                        sizeOnDisk.LowPart,
+                        &read,
+                        NULL );
+
+    if (!success)
+    {
+        result = GetLastError();
+        printf( "ERROR: Failed to read file. 0x%08x\n", result );
+        goto Cleanup;
+    }
+
+    result = ERROR_SUCCESS;
+
+Cleanup:
+
+    if (file != INVALID_HANDLE_VALUE)
+    {
+        CloseHandle( file );
+    }
+
+    return result;
+}
+
+int
 DumpBufferToFile(
     char * filePath,
     UINT16 size,
     BYTE *buffer
 )
 {
-    HANDLE file;
+    HANDLE file = INVALID_HANDLE_VALUE;
     DWORD result;
     BOOL success;
     DWORD written;
@@ -447,7 +577,7 @@ DumpBufferToFile(
 
     if (file == INVALID_HANDLE_VALUE) {
         result = GetLastError();
-        printf("ERROR: Failed to write file. 0x%08x\n", result);
+        printf( "ERROR: Failed to write file. 0x%08x\n", result );
         goto Cleanup;
     }
 
@@ -460,13 +590,18 @@ DumpBufferToFile(
     if (!success)
     {
         result = GetLastError();
-        printf("ERROR: Failed to write file. 0x%08x\n", result);
+        printf( "ERROR: Failed to write file. 0x%08x\n", result );
         goto Cleanup;
     }
 
     result = ERROR_SUCCESS;
 
 Cleanup:
+
+    if (file != INVALID_HANDLE_VALUE)
+    {
+        CloseHandle( file );
+    }
 
     return result;
 }
@@ -724,7 +859,8 @@ int main(int argc, char *argv[])
     unsigned int slot = 0xFFFF;
     ANY_OBJECT fbObj = { 0 };
     CMD_PARAM cmd = { 0 };
-    //unsigned char templateTable[FP_SLOTS][FP_TEMPLATE_SIZE] = { 0 };
+    unsigned char template[FP_TEMPLATE_SIZE] = { 0 };
+    int templateSize = FP_TEMPLATE_SIZE;
 
     ZeroMemory(&ctx, sizeof(SCTRM_CTX));
 
@@ -746,6 +882,7 @@ int main(int argc, char *argv[])
     }
 #endif
 
+    // Perform a factory reset.
     if (cmd.force) {
         char prompt[20];
         printf("Factory reset. This will clear the TPM, and will require a new ek be generated.\nAre you sure? (yes/no) ");
@@ -774,12 +911,19 @@ int main(int argc, char *argv[])
 
         if (cmd.ekFilePath != NULL) {
             printf( "Dumping EK name to: %s\n", cmd.ekFilePath );
-            DumpBufferToFile( cmd.ekFilePath, ctx.ekObject.obj.name.t.size, ctx.ekObject.obj.name.t.name );
+            result = DumpBufferToFile( cmd.ekFilePath, ctx.ekObject.obj.name.t.size, ctx.ekObject.obj.name.t.name );
+            if (result != ERROR_SUCCESS) {
+                printf( "Error writting EK to file: status %d (0x%x)\n", result, result );
+                goto Cleanup;
+            }
         }
     }
 
+    //
+    //  Clear any slot as the initial operation.
+    //
     if (cmd.clear) {
-        if (cmd.clearSlot == CLEAR_ALL_SLOTS) {
+        if (cmd.slot == CLEAR_ALL_SLOTS) {
 
             printf( "Clearing all Slots.\n" );
 
@@ -790,9 +934,9 @@ int main(int argc, char *argv[])
             }
         }
         else {
-            printf( "Clearing slot %d.\n", cmd.clearSlot );
+            printf( "Clearing slot %d.\n", cmd.slot );
 
-            if (((result = GetSlot( &ctx, &fbObj, cmd.clearSlot )) != TPM_RC_SUCCESS) ||
+            if (((result = GetSlot( &ctx, &fbObj, cmd.slot )) != TPM_RC_SUCCESS) ||
                 ((result = SendFPCommand( &ctx, &fbObj, FP_SLOT_DELETE_TEMPLATE )) != TPM_RC_SUCCESS)) {
                 printf( "Failed to clear slot.\n" );
                 goto Cleanup;
@@ -800,20 +944,45 @@ int main(int argc, char *argv[])
         }
     }
 
-    if (cmd.enroll) {
-        printf("Enrolling finger. Scan finger three times.\n");
+    //
+    //  We can either write a template to a slot, or enroll. We will not do both.
+    //
+    if (cmd.enrollTemplate) {
 
-        result = GetSlot(&ctx, &fbObj, cmd.enrollSlot);
+        result = GetSlot(&ctx, &fbObj, cmd.slot);
         if (result != TPM_RC_SUCCESS) {
-            printf( "Failed to open slot %d.\n", cmd.enrollSlot );
+            printf( "Failed to open slot %d.\n", cmd.slot );
             goto Cleanup;
         }
 
-        WriteToDisplay(&ctx, "\nEnroll finger in slot[%u]\n", cmd.enrollSlot );
+        printf( "Reading template from: %s\n", cmd.templatePath );
+        result = LoadBufferFromFile( cmd.templatePath, templateSize, template );
+        if (result != ERROR_SUCCESS) {
+            printf( "Error reading template from file: status %d (0x%x)\n", result, result );
+            goto Cleanup;
+        }
+
+        printf( "Writting template to slot[%u].\n", cmd.slot );
+        result = WriteFPTemplate(&ctx, &fbObj,template, templateSize );
+        if (result != TPM_RC_SUCCESS) {
+            printf( "Failed to open slot %d.\n", cmd.slot );
+            goto Cleanup;
+        }
+    }
+    else if (cmd.enroll) {
+        printf("Enrolling finger. Scan finger three times.\n");
+
+        result = GetSlot(&ctx, &fbObj, cmd.slot);
+        if (result != TPM_RC_SUCCESS) {
+            printf( "Failed to open slot %d.\n", cmd.slot );
+            goto Cleanup;
+        }
+
+        WriteToDisplay(&ctx, "\nEnroll finger in slot[%u]\n", cmd.slot );
 
         result = SendFPCommand( &ctx, &fbObj, FP_SLOT_ENROLL_TEMPLATE);
         if (result != TPM_RC_SUCCESS) {
-            printf( "Failed to enroll slot %d.\n", cmd.enrollSlot );
+            printf( "Failed to enroll slot %d.\n", cmd.slot );
             goto Cleanup;
         }
 
@@ -825,19 +994,22 @@ int main(int argc, char *argv[])
             WriteToDisplay(&ctx, "\n%sError. Enroll failed.\n", ESC_FONT_RED);
             goto Cleanup;
 
-        }else if (slot != cmd.enrollSlot) {
+        }else if (slot != cmd.slot) {
 
-            printf("Validation failed! Slot %d reported. Expected %d\n", slot, cmd.enrollSlot);
+            printf("Validation failed! Slot %d reported. Expected %d\n", slot, cmd.slot);
             WriteToDisplay(&ctx, "\n%sError. Enroll failed.\n", ESC_FONT_RED);
             goto Cleanup;
         }
         else {
-            WriteToDisplay(&ctx, "\n%sSuccess. slot[%d] enrolled.\n", ESC_FONT_GREEN, cmd.enrollSlot);
+            WriteToDisplay(&ctx, "\n%sSuccess. slot[%d] enrolled.\n", ESC_FONT_GREEN, cmd.slot);
         }
 
         Sleep( 1000 );
     }
 
+    //
+    //  Test if requested
+    //
     while (cmd.test > 0) {
         int rSlot;
         printf( "Running Confirmation\n" );
@@ -860,26 +1032,30 @@ int main(int argc, char *argv[])
         cmd.test--;
     }
 
-    // TODO: Fix reading/writing templates
-        //printf("Read template from slot[%u].\n", n);
-        //sessionTable[0].handle = TPM_RS_PW;
-        //INITIALIZE_CALL_BUFFERS(TPM2_NV_Read, &in.nvRead, &out.nvRead);
-        //parms.objectTableIn[TPM2_NV_Write_HdlIn_AuthHandle] = fpManageObject[n];
-        //parms.objectTableIn[TPM2_NV_Write_HdlIn_NvIndex] = fpManageObject[n];
-        //in.nvRead.offset = 0;
-        //in.nvRead.size = FP_TEMPLATE_SIZE;
-        //EXECUTE_TPM_CALL(FALSE, TPM2_NV_Read);
-        //memcpy(templateTable[n], out.nvRead.data.t.buffer, out.nvRead.data.t.size);
+    //
+    // Read and a Finger Print template from the reader
+    //
+    if (cmd.saveTemplate) {
 
-        //printf("Write template back to slot[%u].\n", n);
-        //sessionTable[0].handle = TPM_RS_PW;
-        //INITIALIZE_CALL_BUFFERS(TPM2_NV_Write, &in.nvWrite, &out.nvWrite);
-        //parms.objectTableIn[TPM2_NV_Write_HdlIn_AuthHandle] = displayObject;
-        //parms.objectTableIn[TPM2_NV_Write_HdlIn_NvIndex] = displayObject;
-        //in.nvWrite.offset = 0;
-        //in.nvWrite.data.t.size = FP_TEMPLATE_SIZE;
-        //memcpy(in.nvWrite.data.t.buffer, templateTable[n], in.nvWrite.data.t.size);
-        //EXECUTE_TPM_CALL(FALSE, TPM2_NV_Write);
+        result = GetSlot(&ctx, &fbObj, cmd.slot);
+        if (result != TPM_RC_SUCCESS) {
+            printf( "Failed to open slot %d.\n", cmd.slot );
+            goto Cleanup;
+        }
+
+        printf( "Read template from slot[%u].\n", cmd.slot );
+        if (ReadFPTemplate( &ctx, &fbObj, template, templateSize, &templateSize ) != TPM_RC_SUCCESS) {
+            printf( "Failed to read template slot %d.\n", cmd.slot );
+            goto Cleanup;
+        }
+
+        printf( "Writting template to: %s\n", cmd.templatePath );
+        result = DumpBufferToFile( cmd.templatePath, templateSize, template );
+        if (result != ERROR_SUCCESS) {
+            printf( "Error writting template to file: status %d (0x%x)\n", result, result );
+            goto Cleanup;
+        }
+    }
 
     printf( "Complete.\n" );
 

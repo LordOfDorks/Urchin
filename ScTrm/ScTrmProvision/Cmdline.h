@@ -8,11 +8,13 @@ typedef struct _CMD_PARAM
     BOOLEAN force;
     BOOLEAN readEK;
     PSTR ekFilePath;
+    PSTR templatePath;
     BOOLEAN enroll;
-    unsigned int enrollSlot;
-    unsigned int test;
     BOOLEAN clear;
-    unsigned int clearSlot;
+    BOOLEAN saveTemplate;
+    BOOLEAN enrollTemplate;
+    unsigned int slot;
+    unsigned int test;
 } CMD_PARAM;
 
 int
