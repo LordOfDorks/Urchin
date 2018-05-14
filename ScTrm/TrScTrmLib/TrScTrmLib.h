@@ -11,23 +11,29 @@ typedef enum
 {
     ScTrmState_None = 0,
 
+    // Common session establishment.
+    ScTrmState_Session_GetEkPubUntrusted,
+    ScTrmState_Session_StartSeededSession,
+    ScTrmState_Session_GetEkPub,
+    ScTrmState_Session_GetNvPublicForDisplayUntrusted,
+    ScTrmState_Session_GetNvPublicForFPReaderUntrusted,
+    ScTrmState_Session_GetNvPublicForDisplay,
+    ScTrmState_Session_GetNvPublicForFPReader,
+    ScTrmState_Session_Complete,
+
     // Function: GetConfirmation
-    ScTrmState_GetConfirmation_GetEkPubUntrusted,
-    ScTrmState_GetConfirmation_StartSeededSession,
-    ScTrmState_GetConfirmation_GetEkPub,
-    ScTrmState_GetConfirmation_GetNvPublicForDisplayUntrusted,
-    ScTrmState_GetConfirmation_GetNvPublicForFPReaderUntrusted,
-    ScTrmState_GetConfirmation_GetNvPublicForDisplay,
-    ScTrmState_GetConfirmation_GetNvPublicForFPReader,
     ScTrmState_GetConfirmation_SetTimeout,
     ScTrmState_GetConfirmation_WriteToDisplay,
     ScTrmState_GetConfirmation_ReadFPId,
     ScTrmState_GetConfirmation_ClearDisplay,
 
     // The following are not sequential 
-    ScTrmState_GetConfirmation_ReadyToDisplay = 0x0FF0,
+    ScTrmState_GetConfirmation_Ready = 0x0FF0,
     ScTrmState_GetConfirmation_Recovery_GetCapability,
     ScTrmState_GetConfirmation_Recovery_FlushHandle,
+
+    // Function: ProvisionFP
+    ScTrmState_ProvisionFP_GetNvPublicForSlotUntrusted,
 
     ScTrmState_Complete_Error = -1
 } ScTrmState_t;
@@ -41,6 +47,17 @@ typedef struct
     UINT16 timeout;
     BOOL verifyEk;
 } GetConfirmation_Param_t;
+
+
+typedef struct
+{
+    TPM2B_NAME ekName;
+    TPM2B_MAX_NV_BUFFER fpTemplate;
+    TPM2B_AUTH fpReaderAuth;
+    TPM2B_AUTH displayAuth;
+    UINT16 fpSlot;
+    BOOL verifyEk;
+} ProvisionFP_Param_t;
 
 typedef struct
 {
@@ -74,6 +91,7 @@ typedef struct
         union
         {
             GetConfirmation_Param_t GetConfirmation;
+            ProvisionFP_Param_t ProvisionFP;
         } func;
     } param;
     struct
@@ -117,3 +135,5 @@ typedef struct
 
 void ScTrmPrepare(ScTrmStateObject_t* state);
 ScTrmResult_t ScTrmGetConfirmation(ScTrmStateObject_t* state);
+ScTrmResult_t ScTrmProvisionFP(ScTrmStateObject_t* state);
+

@@ -51,7 +51,7 @@ ScTrmFunc_MyBreakPointHere(void)
 
 static ScTrmResult_t ScTrmFunc_GetConfirmation_Cleanup(ScTrmStateObject_t* state);
 
-static ScTrmResult_t ScTrmFunc_GetConfirmation_None(ScTrmStateObject_t* state)
+static ScTrmResult_t ScTrmFunc_Session_Start(ScTrmStateObject_t* state)
 {
     DEFINE_CALL_BUFFERS;
     UINT32 result = TPM_RC_SUCCESS;
@@ -76,7 +76,7 @@ static ScTrmResult_t ScTrmFunc_GetConfirmation_None(ScTrmStateObject_t* state)
     return ScTrmResult_Ongoing;
 }
 
-static ScTrmResult_t ScTrmFunc_GetConfirmation_GetEkPubUntrusted(ScTrmStateObject_t* state)
+static ScTrmResult_t ScTrmFunc_Session_GetEkPubUntrusted(ScTrmStateObject_t* state)
 {
     DEFINE_CALL_BUFFERS;
     UINT32 result = TPM_RC_SUCCESS;
@@ -197,7 +197,7 @@ static ScTrmResult_t ScTrmFunc_GetConfirmation_Recovery_GetCapability( ScTrmStat
     }
     else {
         state->intern.state = ScTrmState_None;
-        return ScTrmFunc_GetConfirmation_None(state);
+        return ScTrmFunc_Session_Start(state);
     }
 
 Cleanup:
@@ -210,7 +210,7 @@ Cleanup:
     return ScTrmResult_Ongoing;
 }
 
-static ScTrmResult_t ScTrmFunc_GetConfirmation_StartSeededSession(ScTrmStateObject_t* state)
+static ScTrmResult_t ScTrmFunc_Session_StartSeededSession(ScTrmStateObject_t* state)
 {
     DEFINE_CALL_BUFFERS;
     UINT32 result = TPM_RC_SUCCESS;
@@ -242,7 +242,7 @@ Cleanup:
     return ScTrmResult_Ongoing;
 }
 
-static ScTrmResult_t ScTrmFunc_GetConfirmation_GetEkPub(ScTrmStateObject_t* state)
+static ScTrmResult_t ScTrmFunc_Session_GetEkPub( ScTrmStateObject_t* state )
 {
     DEFINE_CALL_BUFFERS;
     UINT32 result = TPM_RC_SUCCESS;
@@ -276,7 +276,7 @@ Cleanup:
     return ScTrmResult_Ongoing;
 }
 
-static ScTrmResult_t ScTrmFunc_GetConfirmation_GetNvPublicForDisplayUntrusted(ScTrmStateObject_t* state)
+static ScTrmResult_t ScTrmFunc_Session_GetNvPublicForDisplayUntrusted(ScTrmStateObject_t* state)
 {
     DEFINE_CALL_BUFFERS;
     UINT32 result = TPM_RC_SUCCESS;
@@ -308,7 +308,7 @@ Cleanup:
     return ScTrmResult_Ongoing;
 }
 
-static ScTrmResult_t ScTrmFunc_GetConfirmation_GetNvPublicForFPReaderUntrusted(ScTrmStateObject_t* state)
+static ScTrmResult_t ScTrmFunc_Session_GetNvPublicForFPReaderUntrusted(ScTrmStateObject_t* state)
 {
     DEFINE_CALL_BUFFERS;
     UINT32 result = TPM_RC_SUCCESS;
@@ -341,7 +341,7 @@ Cleanup:
     return ScTrmResult_Ongoing;
 }
 
-static ScTrmResult_t ScTrmFunc_GetConfirmation_GetNvPublicForDisplay(ScTrmStateObject_t* state)
+static ScTrmResult_t ScTrmFunc_Session_GetNvPublicForDisplay(ScTrmStateObject_t* state)
 {
     DEFINE_CALL_BUFFERS;
     UINT32 result = TPM_RC_SUCCESS;
@@ -374,16 +374,9 @@ Cleanup:
     return ScTrmResult_Ongoing;
 }
 
-static ScTrmResult_t ScTrmFunc_GetConfirmation_GetNvPublicForFPReader(ScTrmStateObject_t* state)
+static ScTrmResult_t ScTrmFunc_GetConfirmation_Start( ScTrmStateObject_t* state )
 {
     DEFINE_CALL_BUFFERS;
-    UINT32 result = TPM_RC_SUCCESS;
-
-    // This will give us the trusted NV name
-    UNMARSHAL_RSP(TPM2_NV_ReadPublic);
-    state->intern.func.GetConfirmation.nvFPReader = state->intern.urchin.parms.objectTableIn[TPM2_NV_ReadPublic_HdlIn_NvIndex];
-    state->intern.urchin.sessionTable[0].attributes.audit = CLEAR;
-    state->intern.func.GetConfirmation.seededSession = state->intern.urchin.sessionTable[0];
 
     // Write the timeout to the fpReader
     state->intern.urchin.sessionTable[0] = state->intern.func.GetConfirmation.seededSession;
@@ -398,7 +391,22 @@ static ScTrmResult_t ScTrmFunc_GetConfirmation_GetNvPublicForFPReader(ScTrmState
     state->intern.urchin.in.nv_Write.data.t.buffer[3] = FP_AUTHORIZE_TIMEOUT;
     MARSHAL_CMD(TPM2_NV_Write);
 
-    state->intern.state++;
+    state->intern.state = ScTrmState_GetConfirmation_SetTimeout;
+    return ScTrmResult_Ongoing;
+}
+
+static ScTrmResult_t ScTrmFunc_Session_GetNvPublicForFPReader(ScTrmStateObject_t* state)
+{
+    DEFINE_CALL_BUFFERS;
+    UINT32 result = TPM_RC_SUCCESS;
+
+    // This will give us the trusted NV name
+    UNMARSHAL_RSP(TPM2_NV_ReadPublic);
+    state->intern.func.GetConfirmation.nvFPReader = state->intern.urchin.parms.objectTableIn[TPM2_NV_ReadPublic_HdlIn_NvIndex];
+    state->intern.urchin.sessionTable[0].attributes.audit = CLEAR;
+    state->intern.func.GetConfirmation.seededSession = state->intern.urchin.sessionTable[0];
+
+    state->intern.state = ScTrmState_Session_Complete;
 
 Cleanup:
     if (result != TPM_RC_SUCCESS)
@@ -442,7 +450,7 @@ static ScTrmResult_t ScTrmFunc_GetConfirmation_ReadyToDisplay(ScTrmStateObject_t
     // Unexpected. Reset the state machine and create the session state anew.
     // todo: read and clear all active TPM sessions
     state->intern.state = ScTrmState_None;
-    return ScTrmFunc_GetConfirmation_None(state);
+    return ScTrmFunc_Session_Start(state);
 }
 
 static ScTrmResult_t ScTrmFunc_GetConfirmation_SetTimeout(ScTrmStateObject_t* state)
@@ -573,7 +581,7 @@ static ScTrmResult_t ScTrmFunc_GetConfirmation_ClearDisplay(ScTrmStateObject_t* 
 
     // Transistion to ScTrmState_None when we are done.
     // This will preserve TPM session state for the next run.
-    state->intern.state = ScTrmState_GetConfirmation_ReadyToDisplay;
+    state->intern.state = ScTrmState_GetConfirmation_Ready;
 
 Cleanup:
     if (result != TPM_RC_SUCCESS)
@@ -585,80 +593,194 @@ Cleanup:
     return state->intern.result;
 }
 
+
+static ScTrmResult_t ScTrmFunc_ProvisionFP_Start(ScTrmStateObject_t* state)
+{
+    DEFINE_CALL_BUFFERS;
+
+    ;
+    FP_TEMPLATE_SIZE;
+    // Get the name of the NVIndex for the fp slot
+    state->intern.func.GetConfirmation.nvDisplay.nv.handle = state->param.func.ProvisionFP.fpSlot + NV_FPBASE_INDEX;
+    state->intern.func.GetConfirmation.nvDisplay.nv.authValue = state->param.func.ProvisionFP.fpReaderAuth;
+    INITIALIZE_CALL_BUFFERS(TPM2_NV_ReadPublic, &state->intern.urchin.in.nv_ReadPublic, &state->intern.urchin.out.nv_ReadPublic);
+    state->intern.urchin.parms.objectTableIn[TPM2_NV_ReadPublic_HdlIn_NvIndex] = state->intern.func.GetConfirmation.nvDisplay;
+    MARSHAL_CMD(TPM2_NV_ReadPublic);
+
+    state->intern.state = ScTrmState_ProvisionFP_GetNvPublicForSlotUntrusted;
+
+    return ScTrmResult_Ongoing;
+}
+
+static ScTrmResult_t ScTrmFunc_ProvisionFP_GetNvPublicForSlotUntrusted(ScTrmStateObject_t* state)
+{
+    DEFINE_CALL_BUFFERS;
+    UINT32 result = TPM_RC_SUCCESS;
+
+    // This will give us the NV name
+    UNMARSHAL_RSP(TPM2_NV_ReadPublic);
+    state->intern.func.GetConfirmation.nvFPReader = state->intern.urchin.parms.objectTableIn[TPM2_NV_ReadPublic_HdlIn_NvIndex];
+
+    // Check the NV index properties here. We skip that for now.
+
+    // We read the NV public again with the seeded session to make sure nobody is playing tricks with us
+    state->intern.urchin.sessionTable[0] = state->intern.func.GetConfirmation.seededSession;
+    state->intern.urchin.sessionTable[0].attributes.audit = SET;
+    state->intern.urchin.sessionTable[0].attributes.continueSession = SET;
+    INITIALIZE_CALL_BUFFERS(TPM2_NV_ReadPublic, &state->intern.urchin.in.nv_ReadPublic, &state->intern.urchin.out.nv_ReadPublic);
+    state->intern.urchin.parms.objectTableIn[TPM2_NV_ReadPublic_HdlIn_NvIndex] = state->intern.func.GetConfirmation.nvDisplay;
+    MARSHAL_CMD(TPM2_NV_ReadPublic);
+
+    DMSG("SCTRM: GetNvPublicForFPReaderUntrusted state passed\n");
+    state->intern.state++;
+
+Cleanup:
+    if (result != TPM_RC_SUCCESS)
+    {
+        DMSG("SCTRM: GetNvPublicForFPReaderUntrusted state failed with result %x\n", result);
+        ScTrmFunc_MyBreakPointHere();
+        state->intern.state = ScTrmState_Complete_Error;
+        return ScTrmResult_Error;
+    }
+    return ScTrmResult_Ongoing;
+}
+
+ScTrmResult_t ScTrmEstablishSession( ScTrmStateObject_t* state, bool *complete )
+{
+    *complete = false;
+
+    switch (state->intern.state)
+    {
+         case ScTrmState_None:
+        {
+            return ScTrmFunc_Session_Start(state);
+        }
+        case ScTrmState_Session_GetEkPubUntrusted:
+        {
+            return ScTrmFunc_Session_GetEkPubUntrusted(state);
+        }
+        case ScTrmState_Session_StartSeededSession:
+        {
+            return ScTrmFunc_Session_StartSeededSession(state);
+        }
+        case ScTrmState_Session_GetEkPub:
+        {
+            return ScTrmFunc_Session_GetEkPub(state);
+        }
+        case ScTrmState_Session_GetNvPublicForDisplayUntrusted:
+        {
+            return ScTrmFunc_Session_GetNvPublicForDisplayUntrusted(state);
+        }
+        case ScTrmState_Session_GetNvPublicForFPReaderUntrusted:
+        {
+            return ScTrmFunc_Session_GetNvPublicForFPReaderUntrusted(state);
+        }
+        case ScTrmState_Session_GetNvPublicForDisplay:
+        {
+            return ScTrmFunc_Session_GetNvPublicForDisplay(state);
+        }
+        case ScTrmState_Session_GetNvPublicForFPReader:
+        {
+            ScTrmFunc_Session_GetNvPublicForFPReader(state);
+            // Fall through
+        }
+        case ScTrmState_Session_Complete:
+        {
+            *complete = true;
+            return ScTrmResult_Ongoing;
+        }
+    }
+}
+
 ScTrmResult_t ScTrmGetConfirmation(ScTrmStateObject_t* state)
 {
+    bool sessionEstablished;
+
     _cpri__RngStartup();
     _cpri__HashStartup();
     _cpri__RsaStartup();
     _cpri__SymStartup();
 
-    switch(state->intern.state)
+    if (ScTrmEstablishSession( state, &sessionEstablished ) != ScTrmResult_Ongoing) {
+        return ScTrmResult_Error;
+    }
+
+    if (sessionEstablished)
     {
-        case ScTrmState_None:
+        switch(state->intern.state)
         {
-            return ScTrmFunc_GetConfirmation_None(state);
+            case ScTrmState_Session_Complete:
+            {
+                return ScTrmFunc_GetConfirmation_Start(state);
+            }
+            case ScTrmState_GetConfirmation_SetTimeout:
+            {
+                return ScTrmFunc_GetConfirmation_SetTimeout(state);
+            }
+            case ScTrmState_GetConfirmation_Ready:
+            {
+                return ScTrmFunc_GetConfirmation_ReadyToDisplay(state);
+            }
+            case ScTrmState_GetConfirmation_WriteToDisplay:
+            {
+                return ScTrmFunc_GetConfirmation_WriteToDisplay(state);
+            }
+            case ScTrmState_GetConfirmation_ReadFPId:
+            {
+                return ScTrmFunc_GetConfirmation_ReadFPId(state);
+            }
+            case ScTrmState_GetConfirmation_ClearDisplay:
+            {
+                return ScTrmFunc_GetConfirmation_ClearDisplay(state);
+            }
+            case ScTrmState_GetConfirmation_Recovery_GetCapability:
+            {
+                return ScTrmFunc_GetConfirmation_Recovery_GetCapability(state);
+            }
+            case ScTrmState_GetConfirmation_Recovery_FlushHandle:
+            {
+                return ScTrmFunc_GetConfirmation_Recovery_FlushHandle(state);
+            }
+            case ScTrmState_Complete_Error:
+            default:
+            {
+                ScTrmFunc_MyBreakPointHere();
+                return ScTrmResult_Error;
+            }
         }
-        case ScTrmState_GetConfirmation_ReadyToDisplay:
+    }
+}
+
+ScTrmResult_t ScTrmProvisionFP( ScTrmStateObject_t* state )
+{
+    bool sessionEstablished;
+
+    _cpri__RngStartup();
+    _cpri__HashStartup();
+    _cpri__RsaStartup();
+    _cpri__SymStartup();
+
+    if (ScTrmEstablishSession( state, &sessionEstablished ) != ScTrmResult_Ongoing) {
+        return ScTrmResult_Error;
+    }
+
+    if (sessionEstablished)
+    {
+        switch(state->intern.state)
         {
-            return ScTrmFunc_GetConfirmation_ReadyToDisplay(state);
-        }
-        case ScTrmState_GetConfirmation_GetEkPubUntrusted:
-        {
-            return ScTrmFunc_GetConfirmation_GetEkPubUntrusted(state);
-        }
-        case ScTrmState_GetConfirmation_StartSeededSession:
-        {
-            return ScTrmFunc_GetConfirmation_StartSeededSession(state);
-        }
-        case ScTrmState_GetConfirmation_GetEkPub:
-        {
-            return ScTrmFunc_GetConfirmation_GetEkPub(state);
-        }
-        case ScTrmState_GetConfirmation_GetNvPublicForDisplayUntrusted:
-        {
-            return ScTrmFunc_GetConfirmation_GetNvPublicForDisplayUntrusted(state);
-        }
-        case ScTrmState_GetConfirmation_GetNvPublicForFPReaderUntrusted:
-        {
-            return ScTrmFunc_GetConfirmation_GetNvPublicForFPReaderUntrusted(state);
-        }
-        case ScTrmState_GetConfirmation_GetNvPublicForDisplay:
-        {
-            return ScTrmFunc_GetConfirmation_GetNvPublicForDisplay(state);
-        }
-        case ScTrmState_GetConfirmation_GetNvPublicForFPReader:
-        {
-            return ScTrmFunc_GetConfirmation_GetNvPublicForFPReader(state);
-        }
-        case ScTrmState_GetConfirmation_SetTimeout:
-        {
-            return ScTrmFunc_GetConfirmation_SetTimeout(state);
-        }
-        case ScTrmState_GetConfirmation_WriteToDisplay:
-        {
-            return ScTrmFunc_GetConfirmation_WriteToDisplay(state);
-        }
-        case ScTrmState_GetConfirmation_ReadFPId:
-        {
-            return ScTrmFunc_GetConfirmation_ReadFPId(state);
-        }
-        case ScTrmState_GetConfirmation_ClearDisplay:
-        {
-            return ScTrmFunc_GetConfirmation_ClearDisplay(state);
-        }
-        case ScTrmState_GetConfirmation_Recovery_GetCapability:
-        {
-            return ScTrmFunc_GetConfirmation_Recovery_GetCapability(state);
-        }
-        case ScTrmState_GetConfirmation_Recovery_FlushHandle:
-        {
-            return ScTrmFunc_GetConfirmation_Recovery_FlushHandle(state);
-        }
-        case ScTrmState_Complete_Error:
-        default:
-        {
-            ScTrmFunc_MyBreakPointHere();
-            return ScTrmResult_Error;
+            case ScTrmState_Session_Complete:
+            {
+                // Attempt to NV_READ the slot name
+                return ScTrmFunc_ProvisionFP_Start( state );
+            }
+            // If Slot does not exist, define space
+            // Once slot exists, write template.
+            case ScTrmState_Complete_Error:
+            default:
+            {
+                ScTrmFunc_MyBreakPointHere();
+                return ScTrmResult_Error;
+            }
         }
     }
 }
@@ -666,7 +788,7 @@ ScTrmResult_t ScTrmGetConfirmation(ScTrmStateObject_t* state)
 void ScTrmPrepare( ScTrmStateObject_t* state )
 {
     // If we are not ready to display, reset to a workable starting point.
-    if (state->intern.state != ScTrmState_GetConfirmation_ReadyToDisplay) {
+    if (state->intern.state != ScTrmState_GetConfirmation_Ready) {
         state->intern.state = ScTrmState_None;
     }
     state->intern.result = ScTrmResult_Ongoing;
