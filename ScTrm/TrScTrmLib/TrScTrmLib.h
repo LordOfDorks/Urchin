@@ -33,7 +33,14 @@ typedef enum
     ScTrmState_GetConfirmation_Recovery_FlushHandle,
 
     // Function: ProvisionFP
-    ScTrmState_ProvisionFP_GetNvPublicForSlotUntrusted,
+    ScTrmState_ProvisionFP_ReadSlotNameUntrusted,
+    ScTrmState_ProvisionFP_DefineSlot,
+    ScTrmState_ProvisionFP_ReadDefinedSlotUntrusted,
+    ScTrmState_ProvisionFP_ReadDefinedSlotTrusted,
+    ScTrmState_ProvisionFP_CreateSlot,
+    ScTrmState_ProvisionFP_ReadCreatedSlotUntrusted,
+    ScTrmState_ProvisionFP_ReadSlotTrusted,
+    ScTrmState_ProvisionFP_WriteSlotTemplate,
 
     ScTrmState_Complete_Error = -1
 } ScTrmState_t;
@@ -48,13 +55,12 @@ typedef struct
     BOOL verifyEk;
 } GetConfirmation_Param_t;
 
-
 typedef struct
 {
     TPM2B_NAME ekName;
     TPM2B_MAX_NV_BUFFER fpTemplate;
     TPM2B_AUTH fpReaderAuth;
-    TPM2B_AUTH displayAuth;
+    TPM2B_AUTH fpManageAuth;
     UINT16 fpSlot;
     BOOL verifyEk;
 } ProvisionFP_Param_t;
@@ -66,6 +72,14 @@ typedef struct
     ANY_OBJECT    nvDisplay;
     ANY_OBJECT    nvFPReader;
 } GetConfirmation_Intern_t;
+
+typedef struct
+{
+    SESSION       seededSession;
+    ANY_OBJECT    ek;
+    ANY_OBJECT    nvFPSlot;
+    ANY_OBJECT    nvFPReader;
+} ProvisionFP_Intern_t;
 
 typedef enum
 {
@@ -109,6 +123,7 @@ typedef struct
                 ReadPublic_In readPublic;
                 StartAuthSession_In startAuthSession;
                 NV_ReadPublic_In nv_ReadPublic;
+                NV_DefineSpace_In nvDefineSpace;
                 NV_Write_In nv_Write;
                 NV_Read_In nv_Read;
                 GetCapability_In getCapability;
@@ -119,6 +134,7 @@ typedef struct
                 ReadPublic_Out readPublic;
                 StartAuthSession_Out startAuthSession;
                 NV_ReadPublic_Out nv_ReadPublic;
+                NV_DefineSpace_Out nvDefineSpace;
                 NV_Write_Out nv_Write;
                 NV_Read_Out nv_Read;
                 GetCapability_Out getCapability;
@@ -128,6 +144,7 @@ typedef struct
         union
         {
             GetConfirmation_Intern_t GetConfirmation;
+            ProvisionFP_Intern_t ProvisionFP;
         } func;
     } intern;
 } ScTrmStateObject_t;

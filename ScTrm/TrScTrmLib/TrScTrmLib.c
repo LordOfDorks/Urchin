@@ -51,6 +51,13 @@ ScTrmFunc_MyBreakPointHere(void)
 
 static ScTrmResult_t ScTrmFunc_GetConfirmation_Cleanup(ScTrmStateObject_t* state);
 
+inline void ScTrmFunc_UseSeededSession( ScTrmStateObject_t* state )
+{
+    state->intern.urchin.sessionTable[0] = state->intern.func.GetConfirmation.seededSession;
+    state->intern.urchin.sessionTable[0].attributes.audit = SET;
+    state->intern.urchin.sessionTable[0].attributes.continueSession = SET;
+}
+
 static ScTrmResult_t ScTrmFunc_Session_Start(ScTrmStateObject_t* state)
 {
     DEFINE_CALL_BUFFERS;
@@ -219,9 +226,7 @@ static ScTrmResult_t ScTrmFunc_Session_StartSeededSession(ScTrmStateObject_t* st
     state->intern.func.GetConfirmation.seededSession = state->intern.urchin.parms.objectTableOut[TPM2_StartAuthSession_HdlOut_SessionHandle].session;
 
     // Request the EK information again but this time with auditing so the information can be trusted
-    state->intern.urchin.sessionTable[0] = state->intern.func.GetConfirmation.seededSession;
-    state->intern.urchin.sessionTable[0].attributes.audit = SET;
-    state->intern.urchin.sessionTable[0].attributes.continueSession = SET;
+    ScTrmFunc_UseSeededSession(state);
     INITIALIZE_CALL_BUFFERS(TPM2_ReadPublic, &state->intern.urchin.in.readPublic, &state->intern.urchin.out.readPublic);
     state->intern.urchin.parms.objectTableIn[TPM2_ReadPublic_HdlIn_PublicKey] = state->intern.func.GetConfirmation.ek;
     MARSHAL_CMD(TPM2_ReadPublic);
@@ -320,9 +325,7 @@ static ScTrmResult_t ScTrmFunc_Session_GetNvPublicForFPReaderUntrusted(ScTrmStat
     // Check the NV index properties here. We skip that for now.
 
     // We read the NV public again with the seeded session to make sure nobody is playing tricks with us
-    state->intern.urchin.sessionTable[0] = state->intern.func.GetConfirmation.seededSession;
-    state->intern.urchin.sessionTable[0].attributes.audit = SET;
-    state->intern.urchin.sessionTable[0].attributes.continueSession = SET;
+    ScTrmFunc_UseSeededSession(state);
     INITIALIZE_CALL_BUFFERS(TPM2_NV_ReadPublic, &state->intern.urchin.in.nv_ReadPublic, &state->intern.urchin.out.nv_ReadPublic);
     state->intern.urchin.parms.objectTableIn[TPM2_NV_ReadPublic_HdlIn_NvIndex] = state->intern.func.GetConfirmation.nvDisplay;
     MARSHAL_CMD(TPM2_NV_ReadPublic);
@@ -353,9 +356,7 @@ static ScTrmResult_t ScTrmFunc_Session_GetNvPublicForDisplay(ScTrmStateObject_t*
     state->intern.func.GetConfirmation.seededSession = state->intern.urchin.sessionTable[0];
 
     // We read the NV public again with the seeded session to make sure nobody is playing tricks with us
-    state->intern.urchin.sessionTable[0] = state->intern.func.GetConfirmation.seededSession;
-    state->intern.urchin.sessionTable[0].attributes.audit = SET;
-    state->intern.urchin.sessionTable[0].attributes.continueSession = SET;
+    ScTrmFunc_UseSeededSession(state);
     INITIALIZE_CALL_BUFFERS(TPM2_NV_ReadPublic, &state->intern.urchin.in.nv_ReadPublic, &state->intern.urchin.out.nv_ReadPublic);
     state->intern.urchin.parms.objectTableIn[TPM2_NV_ReadPublic_HdlIn_NvIndex] = state->intern.func.GetConfirmation.nvFPReader;
     MARSHAL_CMD(TPM2_NV_ReadPublic);
@@ -379,9 +380,7 @@ static ScTrmResult_t ScTrmFunc_GetConfirmation_Start( ScTrmStateObject_t* state 
     DEFINE_CALL_BUFFERS;
 
     // Write the timeout to the fpReader
-    state->intern.urchin.sessionTable[0] = state->intern.func.GetConfirmation.seededSession;
-    state->intern.urchin.sessionTable[0].attributes.decrypt = SET;
-    state->intern.urchin.sessionTable[0].attributes.continueSession = SET;
+    ScTrmFunc_UseSeededSession(state);
     INITIALIZE_CALL_BUFFERS(TPM2_NV_Write, &state->intern.urchin.in.nv_Write, &state->intern.urchin.out.nv_Write);
     state->intern.urchin.parms.objectTableIn[TPM2_NV_Write_HdlIn_AuthHandle] = state->intern.func.GetConfirmation.nvFPReader;
     state->intern.urchin.parms.objectTableIn[TPM2_NV_Write_HdlIn_NvIndex] = state->intern.func.GetConfirmation.nvFPReader;
@@ -579,7 +578,7 @@ static ScTrmResult_t ScTrmFunc_GetConfirmation_ClearDisplay(ScTrmStateObject_t* 
     UNMARSHAL_RSP(TPM2_NV_Write);
     state->intern.func.GetConfirmation.seededSession = state->intern.urchin.sessionTable[0];
 
-    // Transistion to ScTrmState_None when we are done.
+    // Transition to ScTrmState_None when we are done.
     // This will preserve TPM session state for the next run.
     state->intern.state = ScTrmState_GetConfirmation_Ready;
 
@@ -593,51 +592,252 @@ Cleanup:
     return state->intern.result;
 }
 
-
 static ScTrmResult_t ScTrmFunc_ProvisionFP_Start(ScTrmStateObject_t* state)
 {
     DEFINE_CALL_BUFFERS;
 
-    ;
-    FP_TEMPLATE_SIZE;
-    // Get the name of the NVIndex for the fp slot
-    state->intern.func.GetConfirmation.nvDisplay.nv.handle = state->param.func.ProvisionFP.fpSlot + NV_FPBASE_INDEX;
-    state->intern.func.GetConfirmation.nvDisplay.nv.authValue = state->param.func.ProvisionFP.fpReaderAuth;
+    // Marshal a NV_ReadPublic to see if the slot is already defined.
+    state->intern.func.ProvisionFP.nvFPSlot.nv.handle = state->param.func.ProvisionFP.fpSlot + NV_FPBASE_INDEX;
+    state->intern.func.ProvisionFP.nvFPSlot.nv.authValue = state->param.func.ProvisionFP.fpManageAuth;
     INITIALIZE_CALL_BUFFERS(TPM2_NV_ReadPublic, &state->intern.urchin.in.nv_ReadPublic, &state->intern.urchin.out.nv_ReadPublic);
-    state->intern.urchin.parms.objectTableIn[TPM2_NV_ReadPublic_HdlIn_NvIndex] = state->intern.func.GetConfirmation.nvDisplay;
+    state->intern.urchin.parms.objectTableIn[TPM2_NV_ReadPublic_HdlIn_NvIndex] = state->intern.func.ProvisionFP.nvFPSlot;
     MARSHAL_CMD(TPM2_NV_ReadPublic);
 
-    state->intern.state = ScTrmState_ProvisionFP_GetNvPublicForSlotUntrusted;
+    state->intern.state = ScTrmState_ProvisionFP_ReadSlotNameUntrusted;
 
     return ScTrmResult_Ongoing;
 }
 
-static ScTrmResult_t ScTrmFunc_ProvisionFP_GetNvPublicForSlotUntrusted(ScTrmStateObject_t* state)
+static ScTrmResult_t ScTrmFunc_ProvisionFP_ReadSlotNameUntrusted(ScTrmStateObject_t* state)
 {
     DEFINE_CALL_BUFFERS;
     UINT32 result = TPM_RC_SUCCESS;
 
-    // This will give us the NV name
-    UNMARSHAL_RSP(TPM2_NV_ReadPublic);
-    state->intern.func.GetConfirmation.nvFPReader = state->intern.urchin.parms.objectTableIn[TPM2_NV_ReadPublic_HdlIn_NvIndex];
+    //  Get the read result.
+    TRY_UNMARSHAL_RSP(TPM2_NV_ReadPublic);
 
-    // Check the NV index properties here. We skip that for now.
+    if (result != TPM_RC_SUCCESS) {
+        //  No slot defined. We need to define it.
+        ScTrmFunc_UseSeededSession(state);
+        INITIALIZE_CALL_BUFFERS(TPM2_NV_DefineSpace, &state->intern.urchin.in.nvDefineSpace, &state->intern.urchin.out.nvDefineSpace);
 
-    // We read the NV public again with the seeded session to make sure nobody is playing tricks with us
-    state->intern.urchin.sessionTable[0] = state->intern.func.GetConfirmation.seededSession;
-    state->intern.urchin.sessionTable[0].attributes.audit = SET;
-    state->intern.urchin.sessionTable[0].attributes.continueSession = SET;
+        state->intern.urchin.in.nvDefineSpace.auth =  state->intern.func.ProvisionFP.nvFPSlot.nv.authValue;
+        state->intern.urchin.in.nvDefineSpace.publicInfo.t.nvPublic.nvIndex = state->intern.func.ProvisionFP.nvFPSlot.nv.handle;
+        state->intern.urchin.in.nvDefineSpace.publicInfo.t.nvPublic.nameAlg = TPM_ALG_SHA256;
+        state->intern.urchin.in.nvDefineSpace.publicInfo.t.nvPublic.attributes.TPMA_NV_AUTHREAD = SET;
+        state->intern.urchin.in.nvDefineSpace.publicInfo.t.nvPublic.attributes.TPMA_NV_AUTHWRITE = SET;
+        state->intern.urchin.in.nvDefineSpace.publicInfo.t.nvPublic.attributes.TPMA_NV_NO_DA = SET;
+        state->intern.urchin.in.nvDefineSpace.publicInfo.t.nvPublic.authPolicy.t.size = 0;
+        state->intern.urchin.in.nvDefineSpace.publicInfo.t.nvPublic.dataSize = FP_TEMPLATE_SIZE;
+        MARSHAL_CMD(TPM2_NV_DefineSpace);
+
+        state->intern.state = ScTrmState_ProvisionFP_DefineSlot;
+    }
+    else {
+        // Slot defined. Read it using the seeded session.
+        state->intern.func.ProvisionFP.nvFPSlot = state->intern.urchin.parms.objectTableIn[TPM2_NV_ReadPublic_HdlIn_NvIndex];
+
+        ScTrmFunc_UseSeededSession(state);
+        INITIALIZE_CALL_BUFFERS(TPM2_NV_ReadPublic, &state->intern.urchin.in.nv_ReadPublic, &state->intern.urchin.out.nv_ReadPublic);
+        state->intern.urchin.parms.objectTableIn[TPM2_NV_ReadPublic_HdlIn_NvIndex] = state->intern.func.ProvisionFP.nvFPSlot;
+        MARSHAL_CMD(TPM2_NV_ReadPublic);
+
+        state->intern.state = ScTrmState_ProvisionFP_ReadSlotTrusted;
+    }
+
+    DMSG("SCTRM: ProvisionFP_Start state passed\n");
+
+//Cleanup:
+    if (result != TPM_RC_SUCCESS)
+    {
+        DMSG("SCTRM: GetSlotNameUntrusted state failed with result %x\n", result);
+        ScTrmFunc_MyBreakPointHere();
+        state->intern.state = ScTrmState_Complete_Error;
+        return ScTrmResult_Error;
+    }
+    return ScTrmResult_Ongoing;
+}
+
+static ScTrmResult_t ScTrmFunc_ProvisionFP_DefineSlot( ScTrmStateObject_t* state )
+{
+    DEFINE_CALL_BUFFERS;
+    UINT32 result = TPM_RC_SUCCESS;
+
+    UNMARSHAL_RSP(TPM2_NV_DefineSpace);
+
+    //  Read back the newly defined object name.
     INITIALIZE_CALL_BUFFERS(TPM2_NV_ReadPublic, &state->intern.urchin.in.nv_ReadPublic, &state->intern.urchin.out.nv_ReadPublic);
-    state->intern.urchin.parms.objectTableIn[TPM2_NV_ReadPublic_HdlIn_NvIndex] = state->intern.func.GetConfirmation.nvDisplay;
+    state->intern.urchin.parms.objectTableIn[TPM2_NV_ReadPublic_HdlIn_NvIndex] = state->intern.func.ProvisionFP.nvFPSlot;
     MARSHAL_CMD(TPM2_NV_ReadPublic);
 
-    DMSG("SCTRM: GetNvPublicForFPReaderUntrusted state passed\n");
-    state->intern.state++;
+    state->intern.state = ScTrmState_ProvisionFP_ReadDefinedSlotUntrusted;
 
 Cleanup:
     if (result != TPM_RC_SUCCESS)
     {
-        DMSG("SCTRM: GetNvPublicForFPReaderUntrusted state failed with result %x\n", result);
+        DMSG("SCTRM: ReadDefinedSlotUntrusted state failed with result %x\n", result);
+        ScTrmFunc_MyBreakPointHere();
+        state->intern.state = ScTrmState_Complete_Error;
+        return ScTrmResult_Error;
+    }
+    return ScTrmResult_Ongoing;
+}
+
+static ScTrmResult_t ScTrmFunc_ProvisionFP_ReadDefinedSlotUntrusted( ScTrmStateObject_t* state )
+{
+    DEFINE_CALL_BUFFERS;
+    UINT32 result = TPM_RC_SUCCESS;
+
+    UNMARSHAL_RSP(TPM2_NV_ReadPublic);
+    state->intern.func.ProvisionFP.nvFPSlot = state->intern.urchin.parms.objectTableIn[TPM2_NV_ReadPublic_HdlIn_NvIndex];
+
+    //  Now that we have the name, read it again using a seeded session.
+    //  The HMAC associated with the seeded session requires we know the actual name before hand.
+    ScTrmFunc_UseSeededSession(state);
+    INITIALIZE_CALL_BUFFERS(TPM2_NV_ReadPublic, &state->intern.urchin.in.nv_ReadPublic, &state->intern.urchin.out.nv_ReadPublic);
+    state->intern.urchin.parms.objectTableIn[TPM2_NV_ReadPublic_HdlIn_NvIndex] = state->intern.func.ProvisionFP.nvFPSlot;
+    MARSHAL_CMD(TPM2_NV_ReadPublic);
+
+    state->intern.state = ScTrmState_ProvisionFP_ReadDefinedSlotTrusted;
+
+Cleanup:
+    if (result != TPM_RC_SUCCESS)
+    {
+        DMSG("SCTRM: ReadDefinedSlotTrusted state failed with result %x\n", result);
+        ScTrmFunc_MyBreakPointHere();
+        state->intern.state = ScTrmState_Complete_Error;
+        return ScTrmResult_Error;
+    }
+    return ScTrmResult_Ongoing;
+}
+
+static ScTrmResult_t ScTrmFunc_ProvisionFP_ReadDefinedSlotTrusted( ScTrmStateObject_t* state )
+{
+    DEFINE_CALL_BUFFERS;
+    UINT32 result = TPM_RC_SUCCESS;
+
+    UNMARSHAL_RSP(TPM2_NV_ReadPublic);
+    state->intern.func.ProvisionFP.nvFPSlot = state->intern.urchin.parms.objectTableIn[TPM2_NV_ReadPublic_HdlIn_NvIndex];
+
+    // Create the object
+    ScTrmFunc_UseSeededSession(state);
+    INITIALIZE_CALL_BUFFERS(TPM2_NV_Write, &state->intern.urchin.in.nv_Write, &state->intern.urchin.out.nv_Write);
+    state->intern.urchin.parms.objectTableIn[TPM2_NV_Write_HdlIn_AuthHandle] = state->intern.func.ProvisionFP.nvFPSlot;
+    state->intern.urchin.parms.objectTableIn[TPM2_NV_Write_HdlIn_NvIndex] = state->intern.func.ProvisionFP.nvFPSlot;
+    state->intern.urchin.in.nv_Write.offset = 0;
+    state->intern.urchin.in.nv_Write.data.t.size = 0;
+    MARSHAL_CMD(TPM2_NV_Write);
+
+    state->intern.state = ScTrmState_ProvisionFP_CreateSlot;
+
+Cleanup:
+    if (result != TPM_RC_SUCCESS)
+    {
+        DMSG("SCTRM: CreateSlot state failed with result %x\n", result);
+        ScTrmFunc_MyBreakPointHere();
+        state->intern.state = ScTrmState_Complete_Error;
+        return ScTrmResult_Error;
+    }
+    return ScTrmResult_Ongoing;
+}
+
+static ScTrmResult_t ScTrmFunc_ProvisionFP_CreateSlot( ScTrmStateObject_t* state )
+{
+    DEFINE_CALL_BUFFERS;
+    UINT32 result = TPM_RC_SUCCESS;
+
+    UNMARSHAL_RSP(TPM2_NV_Write);
+
+    //  Read back the newly created object name.
+    INITIALIZE_CALL_BUFFERS(TPM2_NV_ReadPublic, &state->intern.urchin.in.nv_ReadPublic, &state->intern.urchin.out.nv_ReadPublic);
+    state->intern.urchin.parms.objectTableIn[TPM2_NV_ReadPublic_HdlIn_NvIndex] = state->intern.func.ProvisionFP.nvFPSlot;
+    MARSHAL_CMD(TPM2_NV_ReadPublic);
+
+    state->intern.state = ScTrmState_ProvisionFP_ReadCreatedSlotUntrusted;
+
+Cleanup:
+    if (result != TPM_RC_SUCCESS)
+    {
+        DMSG("SCTRM: ReadCreatedSlotUntrusted state failed with result %x\n", result);
+        ScTrmFunc_MyBreakPointHere();
+        state->intern.state = ScTrmState_Complete_Error;
+        return ScTrmResult_Error;
+    }
+    return ScTrmResult_Ongoing;
+}
+
+static ScTrmResult_t ScTrmFunc_ProvisionFP_ReadCreatedSlotUntrusted( ScTrmStateObject_t* state )
+{
+    DEFINE_CALL_BUFFERS;
+    UINT32 result = TPM_RC_SUCCESS;
+
+    UNMARSHAL_RSP(TPM2_NV_ReadPublic);
+    state->intern.func.ProvisionFP.nvFPSlot = state->intern.urchin.parms.objectTableIn[TPM2_NV_ReadPublic_HdlIn_NvIndex];
+
+    //  Now that we have the name, read it again using a seeded session.
+    //  The HMAC associated with the seeded session requires we know the actual name before hand.
+    ScTrmFunc_UseSeededSession(state);
+    INITIALIZE_CALL_BUFFERS(TPM2_NV_ReadPublic, &state->intern.urchin.in.nv_ReadPublic, &state->intern.urchin.out.nv_ReadPublic);
+    state->intern.urchin.parms.objectTableIn[TPM2_NV_ReadPublic_HdlIn_NvIndex] = state->intern.func.ProvisionFP.nvFPSlot;
+    MARSHAL_CMD(TPM2_NV_ReadPublic);
+
+    state->intern.state = ScTrmState_ProvisionFP_ReadSlotTrusted;
+
+Cleanup:
+    if (result != TPM_RC_SUCCESS)
+    {
+        DMSG("SCTRM: DefineSlot state failed with result %x\n", result);
+        ScTrmFunc_MyBreakPointHere();
+        state->intern.state = ScTrmState_Complete_Error;
+        return ScTrmResult_Error;
+    }
+    return ScTrmResult_Ongoing;
+}
+
+static ScTrmResult_t ScTrmFunc_ProvisionFP_ReadSlotTrusted( ScTrmStateObject_t* state )
+{
+    DEFINE_CALL_BUFFERS;
+    UINT32 result = TPM_RC_SUCCESS;
+
+    UNMARSHAL_RSP(TPM2_NV_ReadPublic);
+    state->intern.func.ProvisionFP.nvFPSlot = state->intern.urchin.parms.objectTableIn[TPM2_NV_ReadPublic_HdlIn_NvIndex];
+
+    // Write the template
+    ScTrmFunc_UseSeededSession(state);
+    INITIALIZE_CALL_BUFFERS(TPM2_NV_Write, &state->intern.urchin.in.nv_Write, &state->intern.urchin.out.nv_Write);
+    state->intern.urchin.parms.objectTableIn[TPM2_NV_Write_HdlIn_AuthHandle] = state->intern.func.ProvisionFP.nvFPSlot;
+    state->intern.urchin.parms.objectTableIn[TPM2_NV_Write_HdlIn_NvIndex] = state->intern.func.ProvisionFP.nvFPSlot;
+    state->intern.urchin.in.nv_Write.offset = 0;
+    state->intern.urchin.in.nv_Write.data = state->param.func.ProvisionFP.fpTemplate;
+    MARSHAL_CMD(TPM2_NV_Write);
+
+    state->intern.state = ScTrmState_ProvisionFP_WriteSlotTemplate;
+
+Cleanup:
+    if (result != TPM_RC_SUCCESS)
+    {
+        DMSG("SCTRM: ReadSlotTrusted state failed with result %x\n", result);
+        ScTrmFunc_MyBreakPointHere();
+        state->intern.state = ScTrmState_Complete_Error;
+        return ScTrmResult_Error;
+    }
+    return ScTrmResult_Ongoing;
+}
+
+static ScTrmResult_t ScTrmFunc_ProvisionFP_WriteSlotTemplate( ScTrmStateObject_t* state )
+{
+    DEFINE_CALL_BUFFERS;
+    UINT32 result = TPM_RC_SUCCESS;
+
+    UNMARSHAL_RSP(TPM2_NV_Write);
+    state->intern.func.ProvisionFP.nvFPSlot = state->intern.urchin.parms.objectTableIn[TPM2_NV_ReadPublic_HdlIn_NvIndex];
+
+    state->intern.state = ScTrmState_Session_Complete;
+
+Cleanup:
+    if (result != TPM_RC_SUCCESS)
+    {
+        DMSG("SCTRM: WriteSlotTemplate state failed with result %x\n", result);
         ScTrmFunc_MyBreakPointHere();
         state->intern.state = ScTrmState_Complete_Error;
         return ScTrmResult_Error;
@@ -685,6 +885,7 @@ ScTrmResult_t ScTrmEstablishSession( ScTrmStateObject_t* state, bool *complete )
             // Fall through
         }
         case ScTrmState_Session_Complete:
+        default:
         {
             *complete = true;
             return ScTrmResult_Ongoing;
@@ -704,49 +905,49 @@ ScTrmResult_t ScTrmGetConfirmation(ScTrmStateObject_t* state)
     if (ScTrmEstablishSession( state, &sessionEstablished ) != ScTrmResult_Ongoing) {
         return ScTrmResult_Error;
     }
+    else if (!sessionEstablished) {
+        return ScTrmResult_Ongoing;
+    }
 
-    if (sessionEstablished)
+    switch(state->intern.state)
     {
-        switch(state->intern.state)
+        case ScTrmState_Session_Complete:
         {
-            case ScTrmState_Session_Complete:
-            {
-                return ScTrmFunc_GetConfirmation_Start(state);
-            }
-            case ScTrmState_GetConfirmation_SetTimeout:
-            {
-                return ScTrmFunc_GetConfirmation_SetTimeout(state);
-            }
-            case ScTrmState_GetConfirmation_Ready:
-            {
-                return ScTrmFunc_GetConfirmation_ReadyToDisplay(state);
-            }
-            case ScTrmState_GetConfirmation_WriteToDisplay:
-            {
-                return ScTrmFunc_GetConfirmation_WriteToDisplay(state);
-            }
-            case ScTrmState_GetConfirmation_ReadFPId:
-            {
-                return ScTrmFunc_GetConfirmation_ReadFPId(state);
-            }
-            case ScTrmState_GetConfirmation_ClearDisplay:
-            {
-                return ScTrmFunc_GetConfirmation_ClearDisplay(state);
-            }
-            case ScTrmState_GetConfirmation_Recovery_GetCapability:
-            {
-                return ScTrmFunc_GetConfirmation_Recovery_GetCapability(state);
-            }
-            case ScTrmState_GetConfirmation_Recovery_FlushHandle:
-            {
-                return ScTrmFunc_GetConfirmation_Recovery_FlushHandle(state);
-            }
-            case ScTrmState_Complete_Error:
-            default:
-            {
-                ScTrmFunc_MyBreakPointHere();
-                return ScTrmResult_Error;
-            }
+            return ScTrmFunc_GetConfirmation_Start(state);
+        }
+        case ScTrmState_GetConfirmation_SetTimeout:
+        {
+            return ScTrmFunc_GetConfirmation_SetTimeout(state);
+        }
+        case ScTrmState_GetConfirmation_Ready:
+        {
+            return ScTrmFunc_GetConfirmation_ReadyToDisplay(state);
+        }
+        case ScTrmState_GetConfirmation_WriteToDisplay:
+        {
+            return ScTrmFunc_GetConfirmation_WriteToDisplay(state);
+        }
+        case ScTrmState_GetConfirmation_ReadFPId:
+        {
+            return ScTrmFunc_GetConfirmation_ReadFPId(state);
+        }
+        case ScTrmState_GetConfirmation_ClearDisplay:
+        {
+            return ScTrmFunc_GetConfirmation_ClearDisplay(state);
+        }
+        case ScTrmState_GetConfirmation_Recovery_GetCapability:
+        {
+            return ScTrmFunc_GetConfirmation_Recovery_GetCapability(state);
+        }
+        case ScTrmState_GetConfirmation_Recovery_FlushHandle:
+        {
+            return ScTrmFunc_GetConfirmation_Recovery_FlushHandle(state);
+        }
+        case ScTrmState_Complete_Error:
+        default:
+        {
+            ScTrmFunc_MyBreakPointHere();
+            return ScTrmResult_Error;
         }
     }
 }
@@ -763,24 +964,54 @@ ScTrmResult_t ScTrmProvisionFP( ScTrmStateObject_t* state )
     if (ScTrmEstablishSession( state, &sessionEstablished ) != ScTrmResult_Ongoing) {
         return ScTrmResult_Error;
     }
+    else if (!sessionEstablished) {
+        return ScTrmResult_Ongoing;
+    }
 
-    if (sessionEstablished)
+    switch(state->intern.state)
     {
-        switch(state->intern.state)
+        case ScTrmState_Session_Complete:
         {
-            case ScTrmState_Session_Complete:
-            {
-                // Attempt to NV_READ the slot name
-                return ScTrmFunc_ProvisionFP_Start( state );
-            }
-            // If Slot does not exist, define space
-            // Once slot exists, write template.
-            case ScTrmState_Complete_Error:
-            default:
-            {
-                ScTrmFunc_MyBreakPointHere();
-                return ScTrmResult_Error;
-            }
+            // Attempt to NV_READ the slot name
+            return ScTrmFunc_ProvisionFP_Start( state );
+        }
+        case ScTrmState_ProvisionFP_ReadSlotNameUntrusted:
+        {
+            return ScTrmFunc_ProvisionFP_ReadSlotNameUntrusted( state );
+        }
+        case ScTrmState_ProvisionFP_DefineSlot:
+        {
+            return ScTrmFunc_ProvisionFP_DefineSlot( state );
+        }
+        case ScTrmState_ProvisionFP_ReadDefinedSlotUntrusted:
+        {
+            return ScTrmFunc_ProvisionFP_ReadDefinedSlotUntrusted( state );
+        }
+        case ScTrmState_ProvisionFP_ReadDefinedSlotTrusted:
+        {
+            return ScTrmFunc_ProvisionFP_ReadDefinedSlotTrusted( state );
+        }
+        case ScTrmState_ProvisionFP_CreateSlot:
+        {
+            return ScTrmFunc_ProvisionFP_CreateSlot( state );
+        }
+        case ScTrmState_ProvisionFP_ReadCreatedSlotUntrusted:
+        {
+            return ScTrmFunc_ProvisionFP_ReadCreatedSlotUntrusted( state );
+        }
+        case ScTrmState_ProvisionFP_ReadSlotTrusted:
+        {
+            return ScTrmFunc_ProvisionFP_ReadSlotTrusted( state );
+        }
+        case ScTrmState_ProvisionFP_WriteSlotTemplate:
+        {
+            return ScTrmFunc_ProvisionFP_WriteSlotTemplate( state );
+        }
+        case ScTrmState_Complete_Error:
+        default:
+        {
+            ScTrmFunc_MyBreakPointHere();
+            return ScTrmResult_Error;
         }
     }
 }

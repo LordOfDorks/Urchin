@@ -820,6 +820,82 @@ Cleanup:
 }
 
 int
+RunProvisionFp(
+    SCTRM_CTX *ctx,
+    int slotId,
+    UINT16 size,
+    BYTE *buffer
+)
+{
+     // Secure side: variables
+    ScTrmResult_t secReturn = ScTrmResult_Ongoing;
+    char* message = NULL;
+//    int allocSize;
+//    va_list argList;
+
+    // Secure side: Fill out the parameters for the call
+    secState.param.func.ProvisionFP.fpManageAuth.t.size = (UINT16)strlen(fpManageAuth); // FP Manager authorization
+    strcpy_s((char*)secState.param.func.ProvisionFP.fpManageAuth.t.buffer,
+        sizeof(secState.param.func.ProvisionFP.fpManageAuth.t.buffer),
+        fpManageAuth);
+
+    secState.param.func.ProvisionFP.fpReaderAuth.t.size = (UINT16)strlen(fpReaderAuth); // FP reader authorization
+    strcpy_s((char*)secState.param.func.ProvisionFP.fpReaderAuth.t.buffer,
+        sizeof(secState.param.func.ProvisionFP.fpReaderAuth.t.buffer),
+        fpReaderAuth);
+
+    secState.param.func.ProvisionFP.fpSlot = slotId;
+    secState.param.func.ProvisionFP.fpTemplate.t.size = size;
+    memcpy(secState.param.func.ProvisionFP.fpTemplate.t.buffer, buffer, size);
+
+    secState.param.func.ProvisionFP.ekName.t.size = ctx->ekObject.obj.name.t.size; // Expected EK to ensure we are talking to the right device
+    memcpy(&secState.param.func.ProvisionFP.ekName, &ctx->ekObject.obj.name, sizeof(ctx->ekObject.obj.name));
+    secState.param.func.GetConfirmation.verifyEk = true;
+
+    do
+    {
+        // Secure side: Crank the state machine 
+        if ((secReturn = ScTrmProvisionFP( &secState )) == ScTrmResult_Ongoing)
+        {
+            if (PlatformSubmitTPM20Command( FALSE, secState.param.pbCmd, secState.param.cbCmd, secState.param.pbRsp, sizeof( secState.param.pbRsp ), &secState.param.cbRsp ) != TPM_RC_SUCCESS)
+            {
+                secReturn = ScTrmResult_CommError;
+                break;
+            }
+        }
+    } while (secReturn == ScTrmResult_Ongoing);
+    // Secure side: The ping-pong has completed, let's parse the result to see what happend
+    if (secReturn < 0)
+    {
+        printf( "ERROR: Sec error 0x%08x\n", secReturn );
+    }
+    else if (secReturn <= ScTrmResult_MatchMax)
+    {
+        printf( "Finger %u recognized, operation confirmed.\n", secReturn );
+    }
+    else if (secReturn == ScTrmResult_Unrecognized)
+    {
+        printf( "Unrecognized finger pressed, operation canceled.\n" );
+    }
+    else if (secReturn == ScTrmResult_Timeout)
+    {
+        printf( "No finger pressed, operation canceled.\n" );
+    }
+    else
+    {
+        printf( "Error occurred.\n" );
+    }
+
+//Cleanup:
+
+    if (message != NULL) {
+        free( message );
+    }
+
+    return secReturn;
+}
+
+int
 SendFPCommand(
     SCTRM_CTX *ctx,
     ANY_OBJECT *fpObject,
@@ -948,12 +1024,12 @@ int main(int argc, char *argv[])
     //  We can either write a template to a slot, or enroll. We will not do both.
     //
     if (cmd.enrollTemplate) {
-
-        result = GetSlot(&ctx, &fbObj, cmd.slot);
+        
+        /*result = GetSlot(&ctx, &fbObj, cmd.slot);
         if (result != TPM_RC_SUCCESS) {
             printf( "Failed to open slot %d.\n", cmd.slot );
             goto Cleanup;
-        }
+        }*/
 
         printf( "Reading template from: %s\n", cmd.templatePath );
         result = LoadBufferFromFile( cmd.templatePath, templateSize, template );
@@ -963,11 +1039,12 @@ int main(int argc, char *argv[])
         }
 
         printf( "Writting template to slot[%u].\n", cmd.slot );
-        result = WriteFPTemplate(&ctx, &fbObj,template, templateSize );
+        result = RunProvisionFp(&ctx, cmd.slot, templateSize, template);
+        /*result = WriteFPTemplate(&ctx, &fbObj,template, templateSize );
         if (result != TPM_RC_SUCCESS) {
             printf( "Failed to open slot %d.\n", cmd.slot );
             goto Cleanup;
-        }
+        }*/
     }
     else if (cmd.enroll) {
         printf("Enrolling finger. Scan finger three times.\n");
