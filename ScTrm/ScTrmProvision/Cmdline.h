@@ -1,6 +1,6 @@
 #pragma once
 
-#define CLEAR_ALL_SLOTS 0xFFFF
+#define ALL_SLOTS 0xFFFF
 
 typedef struct _CMD_PARAM
 {

@@ -221,18 +221,18 @@ GetCmdlineParams(
         return -1;
     }
 
-    param->slot = CLEAR_ALL_SLOTS;
+    param->slot = ALL_SLOTS;
 
     if (param->clear) {
         // SLOT is optional
         if (GetSwitchWithIntValue( argc, argv, SW_SLOT, &param->slot ) != ERROR_SUCCESS)
         {
-            param->slot = CLEAR_ALL_SLOTS;
+            param->slot = ALL_SLOTS;
         }
     }
 
     if ((param->enroll || param->test || param->saveTemplate || param->enrollTemplate) &&
-        param->slot == CLEAR_ALL_SLOTS) {
+        param->slot == ALL_SLOTS) {
         // SLOT is required
         if (GetSwitchWithIntValue( argc, argv, SW_SLOT, &param->slot ) != ERROR_SUCCESS)
         {
@@ -257,6 +257,7 @@ GetCmdlineParams(
             PrintUsage(argc, argv);
             return -1;
         }
+        param->readEK = TRUE;
     }
 
     if (param->readEK) {

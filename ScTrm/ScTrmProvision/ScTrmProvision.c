@@ -869,17 +869,9 @@ RunProvisionFp(
     {
         printf( "ERROR: Sec error 0x%08x\n", secReturn );
     }
-    else if (secReturn <= ScTrmResult_MatchMax)
+    else if (secReturn == ScTrmResult_TemplateWritten)
     {
-        printf( "Finger %u recognized, operation confirmed.\n", secReturn );
-    }
-    else if (secReturn == ScTrmResult_Unrecognized)
-    {
-        printf( "Unrecognized finger pressed, operation canceled.\n" );
-    }
-    else if (secReturn == ScTrmResult_Timeout)
-    {
-        printf( "No finger pressed, operation canceled.\n" );
+        printf( "Template written to slot %u, operation confirmed.\n", slotId );
     }
     else
     {
@@ -999,7 +991,7 @@ int main(int argc, char *argv[])
     //  Clear any slot as the initial operation.
     //
     if (cmd.clear) {
-        if (cmd.slot == CLEAR_ALL_SLOTS) {
+        if (cmd.slot == ALL_SLOTS) {
 
             printf( "Clearing all Slots.\n" );
 
@@ -1023,62 +1015,63 @@ int main(int argc, char *argv[])
     //
     //  We can either write a template to a slot, or enroll. We will not do both.
     //
-    if (cmd.enrollTemplate) {
-        
-        /*result = GetSlot(&ctx, &fbObj, cmd.slot);
-        if (result != TPM_RC_SUCCESS) {
-            printf( "Failed to open slot %d.\n", cmd.slot );
-            goto Cleanup;
-        }*/
 
-        printf( "Reading template from: %s\n", cmd.templatePath );
-        result = LoadBufferFromFile( cmd.templatePath, templateSize, template );
-        if (result != ERROR_SUCCESS) {
-            printf( "Error reading template from file: status %d (0x%x)\n", result, result );
-            goto Cleanup;
+    if (cmd.enrollTemplate || cmd.enroll)
+    {
+        if (cmd.enrollTemplate) {
+
+            printf( "Reading template from: %s\n", cmd.templatePath );
+            result = LoadBufferFromFile( cmd.templatePath, templateSize, template );
+            if (result != ERROR_SUCCESS) {
+                printf( "Error reading template from file: status %d (0x%x)\n", result, result );
+                goto Cleanup;
+            }
+
+            printf( "Writing template to slot[%u].\n", cmd.slot );
+            result = RunProvisionFp( &ctx, cmd.slot, templateSize, template );
+            if (result != ScTrmResult_TemplateWritten) {
+                printf( "Failed to write template to slot %d.\n", cmd.slot );
+                goto Cleanup;
+            }
+
+            result = ERROR_SUCCESS;
+        }
+        else if (cmd.enroll) {
+            printf( "Enrolling finger. Scan finger three times.\n" );
+
+            result = GetSlot( &ctx, &fbObj, cmd.slot );
+            if (result != TPM_RC_SUCCESS) {
+                printf( "Failed to open slot %d.\n", cmd.slot );
+                goto Cleanup;
+            }
+
+            WriteToDisplay( &ctx, "\nEnroll finger in slot[%u]\n", cmd.slot );
+
+            result = SendFPCommand( &ctx, &fbObj, FP_SLOT_ENROLL_TEMPLATE );
+            if (result != TPM_RC_SUCCESS) {
+                printf( "Failed to enroll slot %d.\n", cmd.slot );
+                goto Cleanup;
+            }
         }
 
-        printf( "Writting template to slot[%u].\n", cmd.slot );
-        result = RunProvisionFp(&ctx, cmd.slot, templateSize, template);
-        /*result = WriteFPTemplate(&ctx, &fbObj,template, templateSize );
-        if (result != TPM_RC_SUCCESS) {
-            printf( "Failed to open slot %d.\n", cmd.slot );
-            goto Cleanup;
-        }*/
-    }
-    else if (cmd.enroll) {
-        printf("Enrolling finger. Scan finger three times.\n");
-
-        result = GetSlot(&ctx, &fbObj, cmd.slot);
-        if (result != TPM_RC_SUCCESS) {
-            printf( "Failed to open slot %d.\n", cmd.slot );
-            goto Cleanup;
-        }
-
-        WriteToDisplay(&ctx, "\nEnroll finger in slot[%u]\n", cmd.slot );
-
-        result = SendFPCommand( &ctx, &fbObj, FP_SLOT_ENROLL_TEMPLATE);
-        if (result != TPM_RC_SUCCESS) {
-            printf( "Failed to enroll slot %d.\n", cmd.slot );
-            goto Cleanup;
-        }
-
+        // Common enrollment validation.
         CLEAR_DISPLAY;
-        printf("Validating enrollment.\n");
+        printf( "Validating enrollment.\n" );
         if (!ValidateFB( &ctx, &slot )) {
 
-            printf("Validation failed!\n");
-            WriteToDisplay(&ctx, "\n%sError. Enroll failed.\n", ESC_FONT_RED);
+            printf( "Validation failed!\n" );
+            WriteToDisplay( &ctx, "\n%sError. Enroll failed.\n", ESC_FONT_RED );
             goto Cleanup;
 
-        }else if (slot != cmd.slot) {
+        }
+        else if (slot != cmd.slot) {
 
-            printf("Validation failed! Slot %d reported. Expected %d\n", slot, cmd.slot);
-            WriteToDisplay(&ctx, "\n%sError. Enroll failed.\n", ESC_FONT_RED);
+            printf( "Validation failed! Slot %d reported. Expected %d\n", slot, cmd.slot );
+            WriteToDisplay( &ctx, "\n%sError. Enroll failed.\n", ESC_FONT_RED );
             goto Cleanup;
         }
         else {
-            WriteToDisplay(&ctx, "\n%sSuccess. slot[%d] enrolled.\n", ESC_FONT_GREEN, cmd.slot);
+            WriteToDisplay( &ctx, "\n%sSuccess. slot[%d] enrolled.\n", ESC_FONT_GREEN, cmd.slot );
         }
 
         Sleep( 1000 );
@@ -1103,7 +1096,12 @@ int main(int argc, char *argv[])
             printf( "Error: Failed to validate finger.\n" );
         }
         else {
-            printf( "Validation succeeded. Fingerprint is enrolled in slot %d.\n", rSlot );
+            if (rSlot != cmd.slot) {
+                printf( "Warning: Validation succeeded but slot unexpected -- Expected %d != Reported %d.\n", cmd.slot, rSlot );
+            }
+            else {
+                printf( "Validation succeeded. Fingerprint is enrolled in slot %d.\n", rSlot );
+            }
         }
         CLEAR_DISPLAY;
         cmd.test--;

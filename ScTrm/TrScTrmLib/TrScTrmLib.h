@@ -86,6 +86,7 @@ typedef enum
     ScTrmResult_Match0 = 0,           // Procedure complete: Match with template in slot 0
                                       // Procedure complete: Match with template in slot 1-198
     ScTrmResult_MatchMax = 199,       // Procedure complete: Match with template in slot 199
+    ScTrmResult_TemplateWritten,
     ScTrmResult_Ongoing = 0x7fffffff, // send msgInOutLen command bytes from msgInOut to proxy;
                                       // overwrite msgInOut with response from proxy and set msgInOutLen
     ScTrmResult_Error = 0x80000000,   // Procedure complete: Error

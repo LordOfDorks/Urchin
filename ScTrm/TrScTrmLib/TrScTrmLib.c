@@ -605,6 +605,8 @@ static ScTrmResult_t ScTrmFunc_ProvisionFP_Start(ScTrmStateObject_t* state)
 
     state->intern.state = ScTrmState_ProvisionFP_ReadSlotNameUntrusted;
 
+    DMSG("SCTRM: ProvisionFP_Start state passed\n");
+
     return ScTrmResult_Ongoing;
 }
 
@@ -618,9 +620,10 @@ static ScTrmResult_t ScTrmFunc_ProvisionFP_ReadSlotNameUntrusted(ScTrmStateObjec
 
     if (result != TPM_RC_SUCCESS) {
         //  No slot defined. We need to define it.
-        ScTrmFunc_UseSeededSession(state);
+        //ScTrmFunc_UseSeededSession(state);
+        state->intern.urchin.sessionTable[0].handle = TPM_RS_PW;
         INITIALIZE_CALL_BUFFERS(TPM2_NV_DefineSpace, &state->intern.urchin.in.nvDefineSpace, &state->intern.urchin.out.nvDefineSpace);
-
+        state->intern.urchin.parms.objectTableIn[TPM2_NV_DefineSpace_HdlIn_AuthHandle].nv.handle = TPM_RH_OWNER;
         state->intern.urchin.in.nvDefineSpace.auth =  state->intern.func.ProvisionFP.nvFPSlot.nv.authValue;
         state->intern.urchin.in.nvDefineSpace.publicInfo.t.nvPublic.nvIndex = state->intern.func.ProvisionFP.nvFPSlot.nv.handle;
         state->intern.urchin.in.nvDefineSpace.publicInfo.t.nvPublic.nameAlg = TPM_ALG_SHA256;
@@ -631,7 +634,10 @@ static ScTrmResult_t ScTrmFunc_ProvisionFP_ReadSlotNameUntrusted(ScTrmStateObjec
         state->intern.urchin.in.nvDefineSpace.publicInfo.t.nvPublic.dataSize = FP_TEMPLATE_SIZE;
         MARSHAL_CMD(TPM2_NV_DefineSpace);
 
+        result = TPM_RC_SUCCESS;
         state->intern.state = ScTrmState_ProvisionFP_DefineSlot;
+
+        DMSG("SCTRM: ProvisionFP_ReadSlotNameUntrusted Creating slot\n");
     }
     else {
         // Slot defined. Read it using the seeded session.
@@ -641,11 +647,16 @@ static ScTrmResult_t ScTrmFunc_ProvisionFP_ReadSlotNameUntrusted(ScTrmStateObjec
         INITIALIZE_CALL_BUFFERS(TPM2_NV_ReadPublic, &state->intern.urchin.in.nv_ReadPublic, &state->intern.urchin.out.nv_ReadPublic);
         state->intern.urchin.parms.objectTableIn[TPM2_NV_ReadPublic_HdlIn_NvIndex] = state->intern.func.ProvisionFP.nvFPSlot;
         MARSHAL_CMD(TPM2_NV_ReadPublic);
+        printf( "Using Auth: { " );
+        for (int i = 0; i < state->intern.func.ProvisionFP.nvFPSlot.nv.authValue.b.size; i++) { 
+            printf( "0x%02x ", state->intern.func.ProvisionFP.nvFPSlot.nv.authValue.b.buffer[i]) ; 
+        }
+        printf( "}\n" );
 
         state->intern.state = ScTrmState_ProvisionFP_ReadSlotTrusted;
-    }
 
-    DMSG("SCTRM: ProvisionFP_Start state passed\n");
+        DMSG("SCTRM: ProvisionFP_ReadSlotNameUntrusted using existing slot\n");
+    }
 
 //Cleanup:
     if (result != TPM_RC_SUCCESS)
@@ -672,10 +683,12 @@ static ScTrmResult_t ScTrmFunc_ProvisionFP_DefineSlot( ScTrmStateObject_t* state
 
     state->intern.state = ScTrmState_ProvisionFP_ReadDefinedSlotUntrusted;
 
+    DMSG("SCTRM: ProvisionFP_DefineSlot state passed\n");
+
 Cleanup:
     if (result != TPM_RC_SUCCESS)
     {
-        DMSG("SCTRM: ReadDefinedSlotUntrusted state failed with result %x\n", result);
+        DMSG("SCTRM: DefineSlot state failed with result %x\n", result);
         ScTrmFunc_MyBreakPointHere();
         state->intern.state = ScTrmState_Complete_Error;
         return ScTrmResult_Error;
@@ -700,10 +713,12 @@ static ScTrmResult_t ScTrmFunc_ProvisionFP_ReadDefinedSlotUntrusted( ScTrmStateO
 
     state->intern.state = ScTrmState_ProvisionFP_ReadDefinedSlotTrusted;
 
+    DMSG("SCTRM: ProvisionFP_ReadDefinedSlotUntrusted state passed\n");
+
 Cleanup:
     if (result != TPM_RC_SUCCESS)
     {
-        DMSG("SCTRM: ReadDefinedSlotTrusted state failed with result %x\n", result);
+        DMSG("SCTRM: ReadDefinedSlotUntrusted state failed with result %x\n", result);
         ScTrmFunc_MyBreakPointHere();
         state->intern.state = ScTrmState_Complete_Error;
         return ScTrmResult_Error;
@@ -730,10 +745,18 @@ static ScTrmResult_t ScTrmFunc_ProvisionFP_ReadDefinedSlotTrusted( ScTrmStateObj
 
     state->intern.state = ScTrmState_ProvisionFP_CreateSlot;
 
+    DMSG("SCTRM: ProvisionFP_ReadDefinedSlotTrusted state passed\n");
+
+    printf( "TPM2_NV_Write Using Auth: { " );
+    for (int i = 0; i < state->intern.func.ProvisionFP.nvFPSlot.nv.authValue.b.size; i++) { 
+        printf( "0x%02x ", state->intern.func.ProvisionFP.nvFPSlot.nv.authValue.b.buffer[i]) ; 
+    }
+    printf( "}\n" );
+
 Cleanup:
     if (result != TPM_RC_SUCCESS)
     {
-        DMSG("SCTRM: CreateSlot state failed with result %x\n", result);
+        DMSG("SCTRM: ReadCreatedSlotUntrusted state failed with result %x\n", result);
         ScTrmFunc_MyBreakPointHere();
         state->intern.state = ScTrmState_Complete_Error;
         return ScTrmResult_Error;
@@ -755,10 +778,12 @@ static ScTrmResult_t ScTrmFunc_ProvisionFP_CreateSlot( ScTrmStateObject_t* state
 
     state->intern.state = ScTrmState_ProvisionFP_ReadCreatedSlotUntrusted;
 
+    DMSG("SCTRM: ProvisionFP_CreateSlot state passed\n");
+
 Cleanup:
     if (result != TPM_RC_SUCCESS)
     {
-        DMSG("SCTRM: ReadCreatedSlotUntrusted state failed with result %x\n", result);
+        DMSG("SCTRM: CreateSlot state failed with result %x\n", result);
         ScTrmFunc_MyBreakPointHere();
         state->intern.state = ScTrmState_Complete_Error;
         return ScTrmResult_Error;
@@ -783,10 +808,18 @@ static ScTrmResult_t ScTrmFunc_ProvisionFP_ReadCreatedSlotUntrusted( ScTrmStateO
 
     state->intern.state = ScTrmState_ProvisionFP_ReadSlotTrusted;
 
+    DMSG("SCTRM: ProvisionFP_ReadCreatedSlotUntrusted state passed\n");
+
+    printf( "Using Auth: { " );
+    for (int i = 0; i < state->intern.func.ProvisionFP.nvFPSlot.nv.authValue.b.size; i++) { 
+        printf( "0x%02x ", state->intern.func.ProvisionFP.nvFPSlot.nv.authValue.b.buffer[i]) ; 
+    }
+    printf( "}\n" );
+
 Cleanup:
     if (result != TPM_RC_SUCCESS)
     {
-        DMSG("SCTRM: DefineSlot state failed with result %x\n", result);
+        DMSG("SCTRM: ReadCreatedSlotUntrusted state failed with result %x\n", result);
         ScTrmFunc_MyBreakPointHere();
         state->intern.state = ScTrmState_Complete_Error;
         return ScTrmResult_Error;
@@ -811,7 +844,16 @@ static ScTrmResult_t ScTrmFunc_ProvisionFP_ReadSlotTrusted( ScTrmStateObject_t* 
     state->intern.urchin.in.nv_Write.data = state->param.func.ProvisionFP.fpTemplate;
     MARSHAL_CMD(TPM2_NV_Write);
 
+    
+        printf( "Using Auth: { " );
+        for (int i = 0; i < state->intern.func.ProvisionFP.nvFPSlot.nv.authValue.b.size; i++) { 
+            printf( "0x%02x ", state->intern.func.ProvisionFP.nvFPSlot.nv.authValue.b.buffer[i]) ; 
+        }
+        printf( "}\n" );
+
     state->intern.state = ScTrmState_ProvisionFP_WriteSlotTemplate;
+
+    DMSG("SCTRM: ProvisionFP_ReadSlotTrusted state passed\n");
 
 Cleanup:
     if (result != TPM_RC_SUCCESS)
@@ -833,6 +875,9 @@ static ScTrmResult_t ScTrmFunc_ProvisionFP_WriteSlotTemplate( ScTrmStateObject_t
     state->intern.func.ProvisionFP.nvFPSlot = state->intern.urchin.parms.objectTableIn[TPM2_NV_ReadPublic_HdlIn_NvIndex];
 
     state->intern.state = ScTrmState_Session_Complete;
+    state->intern.result = ScTrmResult_TemplateWritten;
+
+    DMSG("SCTRM: ProvisionFP_WriteSlotTemplate state passed\n");
 
 Cleanup:
     if (result != TPM_RC_SUCCESS)
@@ -842,7 +887,7 @@ Cleanup:
         state->intern.state = ScTrmState_Complete_Error;
         return ScTrmResult_Error;
     }
-    return ScTrmResult_Ongoing;
+    return state->intern.result;
 }
 
 ScTrmResult_t ScTrmEstablishSession( ScTrmStateObject_t* state, bool *complete )
