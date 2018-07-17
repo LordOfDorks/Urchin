@@ -8,7 +8,7 @@
 //#include "targetver.h"
 
 #ifdef USE_SGX
-#include "TrustedHelper.h"
+#include "tcps_t.h"
 #else
 #define WIN32_LEAN_AND_MEAN             // Exclude rarely-used stuff from Windows headers
 // Windows Header Files:

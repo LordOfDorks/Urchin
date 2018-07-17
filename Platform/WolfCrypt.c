@@ -20,7 +20,7 @@ THE SOFTWARE IS PROVIDED *AS IS*, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 #ifdef USE_WOLFCRYPT
 
 #ifdef TRUSTED_CODE
-# include "TrustedHelper.h"
+# include "tcps_t.h"
 # include "UrchinLib.h"
 # undef MAX_DIGEST_SIZE
 # define AES_encrypt Urchin_AES_encrypt
