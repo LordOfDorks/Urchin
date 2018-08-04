@@ -5,17 +5,16 @@
 
 #pragma once
 
-//#include "targetver.h"
+#include <tcps_string_t.h>
 
-#ifdef USE_SGX
-#include "tcps_t.h"
-#else
+#ifndef USE_SGX
 #define WIN32_LEAN_AND_MEAN             // Exclude rarely-used stuff from Windows headers
 // Windows Header Files:
-#include <stdint.h>
-#include <stdbool.h>
-#include <memory.h>
+# include <stdint.h>
+# include <stdbool.h>
+# include <memory.h>
 #endif
+
 #include "UrchinLib.h"
 #include "UrchinPlatform.h"
 #include "TrScTrmLib.h"
