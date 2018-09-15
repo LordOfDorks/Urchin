@@ -6,6 +6,8 @@
     <ClCompile Include="BCrypt.c" />
     <ClCompile Include="WolfCrypt.c" />
     <ClCompile Include="VCom.c" />
+    <ClCompile Include="VCom-Simulator.c" />
+    <ClCompile Include="VCom-NucleoL476RC.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\Inc\UrchinPlatform.h" />
