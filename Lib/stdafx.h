@@ -12,20 +12,3 @@
 #include <stdint.h>
 #include <string.h>
 #include "UrchinLib.h"
-
-#ifdef USE_TPM_SIMULATOR
-// Linked Simulator Hookup
-extern "C"
-{
-    UINT32 TPMSimSubmitCommand(
-        BOOL CloseContext,
-        BYTE* pbCommand,
-        UINT32 cbCommand,
-        BYTE* pbResponse,
-        UINT32 cbResponse,
-        UINT32* pcbResponse
-        );
-    void TPMSimTeardown(void);
-}
-#define PlatformSubmitTPM20Command TPMSimSubmitCommand
-#endif

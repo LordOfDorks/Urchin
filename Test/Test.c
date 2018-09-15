@@ -2975,6 +2975,7 @@ TestSymEncryption()
     createIn.inPublic.t.publicArea.objectAttributes.userWithAuth = 1;
     createIn.inPublic.t.publicArea.objectAttributes.noDA = 1;
     createIn.inPublic.t.publicArea.objectAttributes.decrypt = 1;
+	createIn.inPublic.t.publicArea.objectAttributes.sign = 1;
     createIn.inPublic.t.publicArea.parameters.symDetail.algorithm = TPM_ALG_AES;
     createIn.inPublic.t.publicArea.parameters.symDetail.keyBits.aes = MAX_AES_KEY_BITS;
     createIn.inPublic.t.publicArea.parameters.symDetail.mode.aes = TPM_ALG_CBC;
@@ -4571,4 +4572,3 @@ Cleanup:
 #endif
     return result;
 }
-
