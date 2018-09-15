@@ -191,4 +191,4 @@ void TPMVComTeardown(void)
 		hVCom = INVALID_HANDLE_VALUE;
 	}
 }
-#endif //NUCLEO
+#endif //VCOM_NUCLEO

@@ -107,4 +107,4 @@ void TPMVComTeardown(void)
 		CloseTpmConnection();
 	}
 }
-#endif //NUCLEO
+#endif //VCOM_SIMULATOR

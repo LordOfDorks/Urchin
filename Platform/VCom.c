@@ -47,4 +47,4 @@ UINT32 TPMVComShutdown()
         (*((unsigned int*)response) == 0));
 }
 
-#endif
+#endif //USE_VCOM_TPM
